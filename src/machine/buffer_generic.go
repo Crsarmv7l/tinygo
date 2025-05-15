@@ -2,4 +2,4 @@
 
 package machine
 
-const bufferSize = 128
+const bufferSize = 255
