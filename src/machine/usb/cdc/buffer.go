@@ -4,7 +4,7 @@ import (
 	"runtime/volatile"
 )
 
-const rxRingBufferSize = 128
+const rxRingBufferSize = 255
 
 // rxRingBuffer is ring buffer implementation inspired by post at
 // https://www.embeddedrelated.com/showthread/comp.arch.embedded/77084-1.php
