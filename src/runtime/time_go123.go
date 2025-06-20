@@ -52,17 +52,20 @@ func newTimer(when, period int64, f func(arg any, seq uintptr, delta int64), arg
 
 //go:linkname stopTimer time.stopTimer
 func stopTimer(tim *timeTimer) bool {
-	return removeTimer(&tim.timer)
+	return removeTimer(&tim.timer) != nil
 }
 
 //go:linkname resetTimer time.resetTimer
 func resetTimer(t *timeTimer, when, period int64) bool {
 	t.timer.when = when
 	t.timer.period = period
-	removed := removeTimer(&t.timer)
-	addTimer(&timerNode{
-		timer:    &t.timer,
-		callback: timerCallback,
-	})
+	n := removeTimer(&t.timer)
+	removed := n != nil
+	if n == nil {
+		n = new(timerNode)
+	}
+	n.timer = &t.timer
+	n.callback = timerCallback
+	addTimer(n)
 	return removed
 }

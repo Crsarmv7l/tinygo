@@ -103,10 +103,11 @@ func (b *builder) createLandingPad() {
 	b.CreateBr(b.blockEntries[b.fn.Recover])
 }
 
-// createInvokeCheckpoint saves the function state at the given point, to
-// continue at the landing pad if a panic happened. This is implemented using a
-// setjmp-like construct.
-func (b *builder) createInvokeCheckpoint() {
+// Create a checkpoint (similar to setjmp). This emits inline assembly that
+// stores the current program counter inside the ptr address (actually
+// ptr+sizeof(ptr)) and then returns a boolean indicating whether this is the
+// normal flow (false) or we jumped here from somewhere else (true).
+func (b *builder) createCheckpoint(ptr llvm.Value) llvm.Value {
 	// Construct inline assembly equivalents of setjmp.
 	// The assembly works as follows:
 	//   * All registers (both callee-saved and caller saved) are clobbered
@@ -217,11 +218,19 @@ li a0, 0
 		// This case should have been handled by b.supportsRecover().
 		b.addError(b.fn.Pos(), "unknown architecture for defer: "+b.archFamily())
 	}
-	asmType := llvm.FunctionType(resultType, []llvm.Type{b.deferFrame.Type()}, false)
+	asmType := llvm.FunctionType(resultType, []llvm.Type{b.dataPtrType}, false)
 	asm := llvm.InlineAsm(asmType, asmString, constraints, false, false, 0, false)
-	result := b.CreateCall(asmType, asm, []llvm.Value{b.deferFrame}, "setjmp")
+	result := b.CreateCall(asmType, asm, []llvm.Value{ptr}, "setjmp")
 	result.AddCallSiteAttribute(-1, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("returns_twice"), 0))
 	isZero := b.CreateICmp(llvm.IntEQ, result, llvm.ConstInt(resultType, 0, false), "setjmp.result")
+	return isZero
+}
+
+// createInvokeCheckpoint saves the function state at the given point, to
+// continue at the landing pad if a panic happened. This is implemented using a
+// setjmp-like construct.
+func (b *builder) createInvokeCheckpoint() {
+	isZero := b.createCheckpoint(b.deferFrame)
 	continueBB := b.insertBasicBlock("")
 	b.CreateCondBr(isZero, continueBB, b.landingpad)
 	b.SetInsertPointAtEnd(continueBB)

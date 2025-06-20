@@ -9,3 +9,4 @@ reentrantCall result: 5
 reentrantCall: 1 8
 called add: 1 8
 reentrantCall result: 9
+goroutineExit: exit

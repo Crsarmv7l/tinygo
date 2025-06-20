@@ -61,8 +61,6 @@ func clock_gettime(clk_id int32, ts *timespec) {
 	}
 }
 
-type timeUnit int64
-
 // Note: tv_sec and tv_nsec normally vary in size by platform. However, we're
 // using the time64 variant (see clock_gettime above), so the formats are the
 // same between 32-bit and 64-bit architectures.
@@ -73,6 +71,7 @@ type timespec struct {
 	tv_nsec int64 // unsigned 64-bit integer on all time64 platforms
 }
 
+// Highest address of the stack of the main thread.
 var stackTop uintptr
 
 // Entry point for Go. Initialize all packages and call main.main().

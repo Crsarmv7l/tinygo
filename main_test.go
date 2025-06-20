@@ -35,6 +35,8 @@ const TESTDATA = "testdata"
 
 var testTarget = flag.String("target", "", "override test target")
 
+var testOnlyCurrentOS = flag.Bool("only-current-os", false, "")
+
 var supportedLinuxArches = map[string]string{
 	"AMD64Linux": "linux/amd64",
 	"X86Linux":   "linux/386",
@@ -158,20 +160,51 @@ func TestBuild(t *testing.T) {
 		return
 	}
 
-	t.Run("EmulatedCortexM3", func(t *testing.T) {
-		t.Parallel()
-		runPlatTests(optionsFromTarget("cortex-m-qemu", sema), tests, t)
-	})
+	if !*testOnlyCurrentOS {
+		t.Run("EmulatedCortexM3", func(t *testing.T) {
+			t.Parallel()
+			runPlatTests(optionsFromTarget("cortex-m-qemu", sema), tests, t)
+		})
 
-	t.Run("EmulatedRISCV", func(t *testing.T) {
-		t.Parallel()
-		runPlatTests(optionsFromTarget("riscv-qemu", sema), tests, t)
-	})
+		t.Run("EmulatedRISCV", func(t *testing.T) {
+			t.Parallel()
+			runPlatTests(optionsFromTarget("riscv-qemu", sema), tests, t)
+		})
 
-	t.Run("AVR", func(t *testing.T) {
-		t.Parallel()
-		runPlatTests(optionsFromTarget("simavr", sema), tests, t)
-	})
+		t.Run("AVR", func(t *testing.T) {
+			t.Parallel()
+			runPlatTests(optionsFromTarget("simavr", sema), tests, t)
+		})
+
+		t.Run("WebAssembly", func(t *testing.T) {
+			t.Parallel()
+
+			runPlatTests(optionsFromTarget("wasm", sema), tests, t)
+			// Test with -gc=boehm.
+			t.Run("gc.go-boehm", func(t *testing.T) {
+				t.Parallel()
+				optionsBoehm := optionsFromTarget("wasm", sema)
+				optionsBoehm.GC = "boehm"
+				runTest("gc.go", optionsBoehm, t, nil, nil)
+			})
+		})
+		t.Run("WASIp1", func(t *testing.T) {
+			t.Parallel()
+			runPlatTests(optionsFromTarget("wasip1", sema), tests, t)
+
+			// Test with -gc=boehm.
+			t.Run("gc.go-boehm", func(t *testing.T) {
+				t.Parallel()
+				optionsBoehm := optionsFromTarget("wasip1", sema)
+				optionsBoehm.GC = "boehm"
+				runTest("gc.go", optionsBoehm, t, nil, nil)
+			})
+		})
+		t.Run("WASIp2", func(t *testing.T) {
+			t.Parallel()
+			runPlatTests(optionsFromTarget("wasip2", sema), tests, t)
+		})
+	}
 
 	if runtime.GOOS == "linux" {
 		for name, osArch := range supportedLinuxArches {
@@ -191,18 +224,13 @@ func TestBuild(t *testing.T) {
 			options := optionsFromOSARCH("linux/mipsle/softfloat", sema)
 			runTest("cgo/", options, t, nil, nil)
 		})
-		t.Run("WebAssembly", func(t *testing.T) {
-			t.Parallel()
-			runPlatTests(optionsFromTarget("wasm", sema), tests, t)
-		})
-		t.Run("WASI", func(t *testing.T) {
-			t.Parallel()
-			runPlatTests(optionsFromTarget("wasip1", sema), tests, t)
-		})
-		t.Run("WASIp2", func(t *testing.T) {
-			t.Parallel()
-			runPlatTests(optionsFromTarget("wasip2", sema), tests, t)
-		})
+	} else if runtime.GOOS == "windows" {
+		if runtime.GOARCH != "386" {
+			t.Run("Windows386", func(t *testing.T) {
+				t.Parallel()
+				runPlatTests(optionsFromOSARCH("windows/386", sema), tests, t)
+			})
+		}
 	}
 }
 
@@ -675,6 +703,10 @@ func TestWasmExport(t *testing.T) {
 				// again.
 				checkResult("reentrantCall(2, 3)", mustCall(mod.ExportedFunction("reentrantCall").Call(ctx, 2, 3)), []uint64{5})
 				checkResult("reentrantCall(1, 8)", mustCall(mod.ExportedFunction("reentrantCall").Call(ctx, 1, 8)), []uint64{9})
+
+				// Check that goroutines started inside //go:wasmexport don't
+				// block the called function from returning.
+				checkResult("goroutineExit()", mustCall(mod.ExportedFunction("goroutineExit").Call(ctx)), nil)
 			}
 
 			// Add wasip1 module.

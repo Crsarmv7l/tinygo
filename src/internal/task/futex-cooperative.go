@@ -1,3 +1,5 @@
+//go:build tinygo.unicore
+
 package task
 
 // A futex is a way for userspace to wait with the pointer as the key, and for

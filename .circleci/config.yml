@@ -73,14 +73,6 @@ commands:
             - go-cache-v4-{{ checksum "go.mod" }}
       - llvm-source-linux
       - run: go install -tags=llvm<<parameters.llvm>> .
-      - restore_cache:
-          keys:
-            - wasi-libc-sysroot-systemclang-v7
-      - run: make wasi-libc
-      - save_cache:
-          key: wasi-libc-sysroot-systemclang-v7
-          paths:
-            - lib/wasi-libc/sysroot
       - when:
           condition: <<parameters.fmt-check>>
           steps:
@@ -100,21 +92,19 @@ commands:
             - /go/pkg/mod
 
 jobs:
-  test-llvm15-go119:
+  test-llvm15-go122:
     docker:
-      - image: golang:1.19-bullseye
+      - image: golang:1.22-bullseye
     steps:
       - test-linux:
           llvm: "15"
-          # "make lint" fails before go 1.21 because internal/tools/go.mod specifies packages that require go 1.21
-          fmt-check: false
     resource_class: large
-  test-llvm19-go124:
+  test-llvm20-go124:
     docker:
       - image: golang:1.24-bullseye
     steps:
       - test-linux:
-          llvm: "19"
+          llvm: "20"
     resource_class: large
 
 workflows:
@@ -122,6 +112,6 @@ workflows:
     jobs:
       # This tests our lowest supported versions of Go and LLVM, to make sure at
       # least the smoke tests still pass.
-      - test-llvm15-go119
-      # This tests LLVM 19 support when linking against system libraries.
-      - test-llvm19-go124
+      - test-llvm15-go122
+      # This tests LLVM 20 support when linking against system libraries.
+      - test-llvm20-go124

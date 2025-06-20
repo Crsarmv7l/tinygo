@@ -15,6 +15,9 @@ import (
 
 // Library is a container for information about a single C library, such as a
 // compiler runtime or libc.
+//
+// Note: whenever a library gets changed, the version in compileopts/config.go
+// probably also needs to be incremented.
 type Library struct {
 	// The library name, such as compiler-rt or picolibc.
 	name string
@@ -25,11 +28,17 @@ type Library struct {
 	// cflags returns the C flags specific to this library
 	cflags func(target, headerPath string) []string
 
+	// cflagsForFile returns additional C flags for a particular source file.
+	cflagsForFile func(path string) []string
+
+	// needsLibc is set to true if this library needs libc headers.
+	needsLibc bool
+
 	// The source directory.
 	sourceDir func() string
 
 	// The source files, relative to sourceDir.
-	librarySources func(target string) ([]string, error)
+	librarySources func(target string, libcNeedsMalloc bool) ([]string, error)
 
 	// The source code for the crt1.o file, relative to sourceDir.
 	crt1Source string
@@ -43,18 +52,9 @@ type Library struct {
 // output archive file, it is expected to be removed after use.
 // As a side effect, this call creates the library header files if they didn't
 // exist yet.
-// The provided libc job (if not null) will cause this libc to be added as a
-// dependency for all C compiler jobs, and adds libc headers for the given
-// target config. In other words, pass this libc if the library needs a libc to
-// compile.
-func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJob) (job *compileJob, abortLock func(), err error) {
-	outdir, precompiled := config.LibcPath(l.name)
+func (l *Library) load(config *compileopts.Config, tmpdir string) (job *compileJob, abortLock func(), err error) {
+	outdir := config.LibraryPath(l.name)
 	archiveFilePath := filepath.Join(outdir, "lib.a")
-	if precompiled {
-		// Found a precompiled library for this OS/architecture. Return the path
-		// directly.
-		return dummyCompileJob(archiveFilePath), func() {}, nil
-	}
 
 	// Create a lock on the output (if supported).
 	// This is a bit messy, but avoids a deadlock because it is ordered consistently with other library loads within a build.
@@ -185,7 +185,7 @@ func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJ
 			args = append(args, "-mfpu=vfpv2")
 		}
 	}
-	if libc != nil {
+	if l.needsLibc {
 		args = append(args, config.LibcCFlags()...)
 	}
 
@@ -226,12 +226,13 @@ func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJ
 
 	// Create jobs to compile all sources. These jobs are depended upon by the
 	// archive job above, so must be run first.
-	paths, err := l.librarySources(target)
+	paths, err := l.librarySources(target, config.LibcNeedsMalloc())
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, path := range paths {
 		// Strip leading "../" parts off the path.
+		path := path
 		cleanpath := path
 		for strings.HasPrefix(cleanpath, "../") {
 			cleanpath = cleanpath[3:]
@@ -245,6 +246,9 @@ func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJ
 			run: func(*compileJob) error {
 				var compileArgs []string
 				compileArgs = append(compileArgs, args...)
+				if l.cflagsForFile != nil {
+					compileArgs = append(compileArgs, l.cflagsForFile(path)...)
+				}
 				compileArgs = append(compileArgs, "-o", objpath, srcpath)
 				if config.Options.PrintCommands != nil {
 					config.Options.PrintCommands("clang", compileArgs...)
@@ -255,9 +259,6 @@ func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJ
 				}
 				return nil
 			},
-		}
-		if libc != nil {
-			objfile.dependencies = append(objfile.dependencies, libc)
 		}
 		job.dependencies = append(job.dependencies, objfile)
 	}
@@ -288,9 +289,6 @@ func (l *Library) load(config *compileopts.Config, tmpdir string, libc *compileJ
 				}
 				return os.Rename(tmpfile.Name(), filepath.Join(outdir, "crt1.o"))
 			},
-		}
-		if libc != nil {
-			crt1Job.dependencies = append(crt1Job.dependencies, libc)
 		}
 		job.dependencies = append(job.dependencies, crt1Job)
 	}

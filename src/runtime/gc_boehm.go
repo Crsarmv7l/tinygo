@@ -1,10 +1,25 @@
 //go:build gc.boehm
 
+// This is the Boehm-Demers-Weiser conservative garbage collector, integrated
+// into TinyGo.
+//
+// Note that we use a special way of dealing with threads:
+//   * All calls to the bdwgc library are serialized using locks.
+//   * When the bdwgc library wants to push GC roots, all other threads that are
+//     running are stopped.
+//   * After returning from a bdwgc library call, the caller checks whether
+//     other threads were stopped (meaning a GC cycle happened) and resumes the
+//     world.
+// This is not exactly the most efficient way to do this. We can likely speed
+// things up by using bdwgc-native wrappers for starting/stopping threads (and
+// also to resume the world while sweeping). Also, thread local allocation might
+// help. But we don't do any of these right now, it is left as a possible future
+// improvement.
+
 package runtime
 
 import (
 	"internal/gclayout"
-	"internal/reflectlite"
 	"internal/task"
 	"unsafe"
 )
@@ -16,22 +31,37 @@ var zeroSizedAlloc uint8
 
 var gcLock task.PMutex
 
+// Normally false, set to true during a GC scan when all other threads get
+// paused.
+var needsResumeWorld bool
+
 func initHeap() {
 	libgc_init()
 
-	libgc_set_push_other_roots(gcCallbackPtr)
+	// Call GC_set_push_other_roots(gcCallback) in C because of function
+	// signature differences that do matter in WebAssembly.
+	gcInit()
 }
 
-var gcCallbackPtr = reflectlite.ValueOf(gcCallback).UnsafePointer()
+//export tinygo_runtime_bdwgc_init
+func gcInit()
 
+//export tinygo_runtime_bdwgc_callback
 func gcCallback() {
-	// Mark the system stack and (if we're on a goroutine stack) also the
-	// current goroutine stack.
-	markStack()
+	// Mark globals and all stacks, and stop the world if we're using threading.
+	gcMarkReachable()
 
-	findGlobals(func(start, end uintptr) {
-		libgc_push_all(start, end)
-	})
+	// If we use a scheduler with parallelism (the threads scheduler for
+	// example), we need to call gcResumeWorld() after scanning has finished.
+	if hasParallelism {
+		if needsResumeWorld {
+			// Should never happen, check for it anyway.
+			runtimePanic("gc: world already stopped")
+		}
+
+		// Note that we need to resume the world after finishing the GC call.
+		needsResumeWorld = true
+	}
 }
 
 func markRoots(start, end uintptr) {
@@ -57,6 +87,7 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 	}
 
 	gcLock.Lock()
+	needsResumeWorld = false
 	var ptr unsafe.Pointer
 	if layout == gclayout.NoPtrs {
 		// This object is entirely pointer free, for example make([]int, ...).
@@ -73,6 +104,9 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		// Memory returned from libgc_malloc has already been zeroed, so nothing
 		// to do here.
 	}
+	if needsResumeWorld {
+		gcResumeWorld()
+	}
 	gcLock.Unlock()
 	if ptr == nil {
 		runtimePanic("gc: out of memory")
@@ -86,7 +120,13 @@ func free(ptr unsafe.Pointer) {
 }
 
 func GC() {
+	gcLock.Lock()
+	needsResumeWorld = false
 	libgc_gcollect()
+	if needsResumeWorld {
+		gcResumeWorld()
+	}
+	gcLock.Unlock()
 }
 
 // This should be stack-allocated, but we don't currently have a good way of

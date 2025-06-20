@@ -27,12 +27,18 @@ const hasScheduler = true
 // concurrency, it does not have parallelism.
 const hasParallelism = false
 
+// Set to true after main.main returns.
+var mainExited bool
+
+// Set to true when the scheduler should exit after the next switch to the
+// scheduler. This is a special case for //go:wasmexport.
+var schedulerExit bool
+
 // Queues used by the scheduler.
 var (
 	runqueue           task.Queue
 	sleepQueue         *task.Task
 	sleepQueueBaseTime timeUnit
-	timerQueue         *timerNode
 )
 
 // deadlock is called when a goroutine cannot proceed any more, but is in theory
@@ -56,6 +62,11 @@ func scheduleTask(t *task.Task) {
 func Gosched() {
 	runqueue.Push(task.Current())
 	task.Pause()
+}
+
+// NumCPU returns the number of logical CPUs usable by the current process.
+func NumCPU() int {
+	return 1
 }
 
 // Add this task to the sleep queue, assuming its state is set to sleeping.
@@ -100,38 +111,17 @@ func addSleepTask(t *task.Task, duration timeUnit) {
 // sleepQueue.
 func addTimer(tim *timerNode) {
 	mask := interrupt.Disable()
-
-	// Add to timer queue.
-	q := &timerQueue
-	for ; *q != nil; q = &(*q).next {
-		if tim.whenTicks() < (*q).whenTicks() {
-			// this will finish earlier than the next - insert here
-			break
-		}
-	}
-	tim.next = *q
-	*q = tim
+	timerQueueAdd(tim)
 	interrupt.Restore(mask)
 }
 
 // removeTimer is the implementation of time.stopTimer. It removes a timer from
-// the timer queue, returning true if the timer is present in the timer queue.
-func removeTimer(tim *timer) bool {
-	removedTimer := false
+// the timer queue, returning it if the timer is present in the timer queue.
+func removeTimer(tim *timer) *timerNode {
 	mask := interrupt.Disable()
-	for t := &timerQueue; *t != nil; t = &(*t).next {
-		if (*t).timer == tim {
-			scheduleLog("removed timer")
-			*t = (*t).next
-			removedTimer = true
-			break
-		}
-	}
-	if !removedTimer {
-		scheduleLog("did not remove timer")
-	}
+	n := timerQueueRemove(tim)
 	interrupt.Restore(mask)
-	return removedTimer
+	return n
 }
 
 func schedulerRunQueue() *task.Queue {
@@ -228,6 +218,13 @@ func scheduler(returnAtDeadlock bool) {
 		// Run the given task.
 		scheduleLogTask("  run:", t)
 		t.Resume()
+
+		// The last call to Resume() was a signal to stop the scheduler since a
+		// //go:wasmexport function returned.
+		if GOARCH == "wasm" && schedulerExit {
+			schedulerExit = false // reset the signal
+			return
+		}
 	}
 }
 
@@ -254,4 +251,20 @@ func run() {
 		mainExited = true
 	}()
 	scheduler(false)
+}
+
+func lockAtomics() interrupt.State {
+	return interrupt.Disable()
+}
+
+func unlockAtomics(mask interrupt.State) {
+	interrupt.Restore(mask)
+}
+
+func printlock() {
+	// nothing to do
+}
+
+func printunlock() {
+	// nothing to do
 }

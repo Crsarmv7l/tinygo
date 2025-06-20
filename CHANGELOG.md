@@ -1,3 +1,101 @@
+0.38.0
+---
+* **general**
+  - `go.*`: upgrade `golang.org/x/tools` to v0.30.0
+  - `all`: add support for LLVM 20
+* **build**
+  - go back to using MinoruSekine/setup-scoop for Windows CI builds
+  - `flake.*`: upgrade to nixpkgs 25.05, LLVM 20
+  - `Makefile`: only detect ccache command when needed
+  - `Makefile`: create random filename inside rule
+  - `Makefile`: don't set GOROOT
+  - `Makefile`: call uname at most once
+  - `Makefile`: only read NodeJS version when it is needed
+* **compiler**
+  - add support for `GODEBUG=gotypesalias=1`
+  - `interp`: fix `copy()` from/to external buffers
+  - add `-nobounds` (similar to `-gcflags=-B`)
+  - `compileopts`: add library version to cached library path
+  - `builder`: build wasi-libc inside TinyGo
+  - `builder`: simplify bdwgc libc dependency
+  - `builder`: don't use precompiled libraries
+  - `compileopts`: enable support for `GOARCH=wasm` in `tinygo test`
+* **fixes**
+  - `rp2350`: Fix DMA to SPI transmits on RP2350 (#4903)
+  - `microbit v2`: use OpenOCD flash method on microbit v2 when using Nordic Semi SoftDevice
+  - `main`: display all of the current GC options for the `-gc` flag
+  - Remove duplicated error handling
+  - `sync`: fix `TestMutexConcurrent` test
+  - fix race condition in `testdata/goroutines.go`
+  - fix build warnings on Windows ARM
+* **machine**
+  - `usb`: add USB mass storage class support
+  - implement usb receive message throttling
+  - declare usb endpoints per-platform
+  - `samd21`: implement watchdog
+  - `samd51`: write to flash memory in 512 byte long chunks
+  - `samd21`: write to flash memory in 64 byte long chunks
+  - don't inline RTT `WriteByte` everywhere
+  - `rp2`: unexport machine-specific errors
+  - `rp2`: discount scheduling delays in I2C timeouts (#4876)
+  - use pointer receiver in simulated PWM peripherals
+  - add simulated PWM/timer peripherals
+  - `rp2`: expose usb endpoint stall handling
+  - `arm`: clear pending interrupts before enabling them
+  - `rp2`: merge common usb code (#4856)
+* **main**
+  - add "cores" and "threads" schedulers to help text
+  - add `StartPos` and `EndPos` to `-json` build output
+  - change `-json` flag to match upstream Go
+* **runtime**
+  - don't lock the print output inside interrupts
+  - don't try to interrupt other cores before they are started
+  - implement `NumCPU` for the multicore scheduler
+  - add support for multicore scheduler
+  - refactor obtaining the system stack
+  - `interrupt`: add `Checkpoint` type
+  - add `exportedFuncPtr`
+  - avoid an allocation in `(*time.Timer).Reset`
+  - stub runtime signal functions for `os/signal` on wasip1
+  - move `timeUnit` to a single place
+  - implement `NumCPU` for `-scheduler=threads`
+  - move `mainExited` boolean
+  - `internal/task`: rename `tinygo_pause` to `tinygo_task_exit`
+  - map every goroutine to a new OS thread
+  - refactor `timerQueue`
+  - make conservative and precise GC MT-safe
+  - `internal/task`: implement atomic primitives for preemptive scheduling
+  - Use diskutil on macOS to extract volume name and path for FAT mounts #4928
+* **standard library**
+  - `net`: update submodule to latest commits
+  - `runtime/debug`: add GC related stubs
+  - `metrics`: flesh out some of the metric types
+  - `reflect`: Chan related stubs
+  - `os`: handle relative and abs paths in `Executable()`
+  - `os`: add `os.Executable()` for Darwin
+  - `sync`: implement `RWMutex` using futexes
+  - `reflect`: Add `SliceOf`, `ArrayOf`, `StructOf`, `MapOf`, `FuncOf`
+* **targets**
+  - `rp2040`: add multicore support
+  - `riscv32`: use `gdb` binary as a fallback
+  - add target for Microbit v2 with SoftDevice S140 support for both peripheral and central
+  - `windows`: use MSVCRT.DLL instead of UCRT on i386
+  - `windows`: add windows/386 support
+  - `arm64`: remove unnecessary `.section` directive
+  - `riscv-qemu`: actually sleep in `time.Sleep()`
+  - `riscv`: define CSR constants and use them where possible
+  - `darwin`: support Boehm GC (and use by default)
+  - `windows`: add support for the Boehm-Demers-Weiser GC
+  - `windows`: fix wrong register for first parameter
+* **wasm**
+  - add Boehm GC support
+  - refactor/modify stub signal handling
+  - don't block `//go:wasmexport` because of running goroutines
+  - use `int64` instead of `float64` for the `timeUnit`
+* **boards**
+  - Add board support for BigTreeTech SKR Pico (#4842)
+
+
 0.37.0
 ---
 * **general**

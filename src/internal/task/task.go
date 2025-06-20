@@ -24,10 +24,27 @@ type Task struct {
 	// This is needed for some crypto packages.
 	FipsIndicator uint8
 
+	// State of the goroutine: running, paused, or must-resume-next-pause.
+	// This extra field doesn't increase memory usage on 32-bit CPUs and above,
+	// since it falls into the padding of the FipsIndicator bit above.
+	RunState uint8
+
 	// DeferFrame stores a pointer to the (stack allocated) defer frame of the
 	// goroutine that is used for the recover builtin.
 	DeferFrame unsafe.Pointer
 }
+
+const (
+	// Initial state: the goroutine state is saved on the stack.
+	RunStatePaused = iota
+
+	// The goroutine is running right now.
+	RunStateRunning
+
+	// The goroutine is running, but already marked as "can resume".
+	// The next call to Pause() won't actually pause the goroutine.
+	RunStateResuming
+)
 
 // DataUint32 returns the Data field as a uint32. The value is only valid after
 // setting it through SetDataUint32 or by storing to it using DataAtomicUint32.

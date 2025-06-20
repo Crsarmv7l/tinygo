@@ -1,3 +1,5 @@
+//go:build tinygo.unicore
+
 package task
 
 // Atomics implementation for cooperative systems. The atomic types here aren't

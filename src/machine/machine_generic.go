@@ -48,6 +48,103 @@ func gpioSet(pin Pin, value bool)
 //export __tinygo_gpio_get
 func gpioGet(pin Pin) bool
 
+// Generic PWM/timer peripheral. Properties can be configured depending on the
+// hardware.
+type timerType struct {
+	// Static properties.
+	instance    int32
+	frequency   uint64
+	bits        int
+	prescalers  []int
+	channelPins [][]Pin
+
+	// Configured 'top' value.
+	top uint32
+}
+
+// Configure the PWM/timer peripheral.
+func (t *timerType) Configure(config PWMConfig) error {
+	// Note: for very large period values, this multiplication will overflow.
+	top := config.Period * t.frequency / 1e9
+	if config.Period == 0 {
+		top = 0xffff // default for LEDs
+	}
+
+	// The maximum value that can be stored with the given number of bits in
+	// this timer.
+	maxTop := uint64(1)<<uint64(t.bits) - 1
+
+	// Look for an appropriate prescaler value.
+	var prescaler int
+	for _, div := range t.prescalers {
+		if top/uint64(div) <= maxTop {
+			prescaler = div
+			top = top / uint64(div)
+			break
+		}
+	}
+	if prescaler == 0 {
+		return ErrPWMPeriodTooLong
+	}
+
+	// Set these values as the configuration.
+	t.top = uint32(top)
+	pwmConfigure(t.instance, float64(t.frequency)/float64(prescaler), uint32(top))
+
+	return nil
+}
+
+// Channel returns a PWM channel for the given pin. Note that one channel may be
+// shared between multiple pins, and so will have the same duty cycle. If this
+// is not desirable, look for a different PWM/timer peripheral or consider using
+// a different pin.
+func (t *timerType) Channel(pin Pin) (uint8, error) {
+	for ch, pins := range t.channelPins {
+		// For nrf52xxx chips specifically we can assign any channel to any pin.
+		// We use a similar (identical?) logic to the hardware implementation,
+		// and pick the first empty channel.
+		if pins == nil {
+			t.channelPins[ch] = []Pin{pin}
+			pwmChannelConfigure(t.instance, int32(ch), pin)
+			return uint8(ch), nil
+		}
+
+		// Check whether the pin can be used on this channel.
+		for _, p := range pins {
+			if p == pin {
+				pwmChannelConfigure(t.instance, int32(ch), pin)
+				return uint8(ch), nil
+			}
+		}
+	}
+
+	return 0, ErrInvalidOutputPin
+}
+
+func (t *timerType) Set(channel uint8, value uint32) {
+	pwmChannelSet(t.instance, channel, value)
+}
+
+// Top returns the current counter top, for use in duty cycle calculation. It
+// will only change with a call to Configure or SetPeriod, otherwise it is
+// constant.
+//
+// The value returned here is hardware dependent. In general, it's best to treat
+// it as an opaque value that can be divided by some number and passed to Set
+// (see Set documentation for more information).
+func (t *timerType) Top() uint32 {
+	return t.top
+}
+
+//export __tinygo_pwm_configure
+func pwmConfigure(instance int32, frequency float64, top uint32)
+
+//export __tinygo_pwm_channel_configure
+func pwmChannelConfigure(instance, channel int32, pin Pin)
+
+//export __tinygo_pwm_channel_set
+func pwmChannelSet(instance int32, channel uint8, value uint32)
+
 type SPI struct {
 	Bus uint8
 }

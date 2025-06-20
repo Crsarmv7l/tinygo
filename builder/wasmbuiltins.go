@@ -29,6 +29,8 @@ var libWasmBuiltins = Library{
 			"-Wall",
 			"-std=gnu11",
 			"-nostdlibinc",
+			"-mnontrapping-fptoint", // match wasm-unknown (default on in LLVM 20)
+			"-mno-bulk-memory",      // same here
 			"-isystem", libcDir + "/libc-top-half/musl/arch/wasm32",
 			"-isystem", libcDir + "/libc-top-half/musl/arch/generic",
 			"-isystem", libcDir + "/libc-top-half/musl/src/internal",
@@ -39,7 +41,7 @@ var libWasmBuiltins = Library{
 		}
 	},
 	sourceDir: func() string { return filepath.Join(goenv.Get("TINYGOROOT"), "lib/wasi-libc") },
-	librarySources: func(target string) ([]string, error) {
+	librarySources: func(target string, _ bool) ([]string, error) {
 		return []string{
 			// memory builtins needed for llvm.memcpy.*, llvm.memmove.*, and
 			// llvm.memset.* LLVM intrinsics.

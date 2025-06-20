@@ -15,6 +15,7 @@ function runTests() {
     testCall('add', [6, 1], 7);
     testCall('reentrantCall', [2, 3], 5);
     testCall('reentrantCall', [1, 8], 9);
+    testCall('goroutineExit', [], undefined);
 }
 
 let go = new Go();

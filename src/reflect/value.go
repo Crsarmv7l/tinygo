@@ -178,6 +178,10 @@ func (v Value) Send(x Value) {
 	panic("unimplemented: reflect.Value.Send()")
 }
 
+func (v Value) TrySend(x Value) bool {
+	panic("unimplemented: reflect.Value.TrySend()")
+}
+
 func (v Value) Close() {
 	panic("unimplemented: reflect.Value.Close()")
 }
@@ -215,6 +219,10 @@ func (v Value) MethodByName(name string) Value {
 
 func (v Value) Recv() (x Value, ok bool) {
 	panic("unimplemented: (reflect.Value).Recv()")
+}
+
+func (v Value) TryRecv() (x Value, ok bool) {
+	panic("unimplemented: (reflect.Value).TryRecv()")
 }
 
 func NewAt(typ Type, p unsafe.Pointer) Value {

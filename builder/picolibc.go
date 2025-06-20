@@ -43,7 +43,7 @@ var libPicolibc = Library{
 		}
 	},
 	sourceDir: func() string { return filepath.Join(goenv.Get("TINYGOROOT"), "lib/picolibc/newlib") },
-	librarySources: func(target string) ([]string, error) {
+	librarySources: func(target string, _ bool) ([]string, error) {
 		sources := append([]string(nil), picolibcSources...)
 		if !strings.HasPrefix(target, "avr") {
 			// Small chips without long jumps can't compile many files (printf,

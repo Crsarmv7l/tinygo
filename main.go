@@ -138,27 +138,13 @@ func printCommand(cmd string, args ...string) {
 }
 
 // Build compiles and links the given package and writes it to outpath.
-func Build(pkgName, outpath string, options *compileopts.Options) error {
-	config, err := builder.NewConfig(options)
-	if err != nil {
-		return err
-	}
-
-	if options.PrintJSON {
-		b, err := json.MarshalIndent(config, "", "  ")
-		if err != nil {
-			handleCompilerError(err)
-		}
-		fmt.Printf("%s\n", string(b))
-		return nil
-	}
-
+func Build(pkgName, outpath string, config *compileopts.Config) error {
 	// Create a temporary directory for intermediary files.
 	tmpdir, err := os.MkdirTemp("", "tinygo")
 	if err != nil {
 		return err
 	}
-	if !options.Work {
+	if !config.Options.Work {
 		defer os.RemoveAll(tmpdir)
 	}
 
@@ -1027,15 +1013,50 @@ func findFATMounts(options *compileopts.Options) ([]mountPoint, error) {
 			return nil, fmt.Errorf("could not list mount points: %w", err)
 		}
 		for _, elem := range list {
-			// TODO: find a way to check for the filesystem type.
-			// (Only return FAT filesystems).
-			points = append(points, mountPoint{
-				name: elem.Name(),
-				path: filepath.Join("/Volumes", elem.Name()),
-			})
+			volumePath := filepath.Join("/Volumes", elem.Name())
+			if _, err := os.Stat(volumePath); err != nil {
+				continue
+			}
+
+			cmd := exec.Command("diskutil", "info", volumePath)
+			var out bytes.Buffer
+			cmd.Stdout = &out
+			if err := cmd.Run(); err != nil {
+				continue // skip if diskutil failed
+			}
+
+			diskInfo := map[string]string{}
+			scanner := bufio.NewScanner(&out)
+			for scanner.Scan() {
+				line := scanner.Text()
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				key := strings.TrimSpace(parts[0])
+				value := strings.TrimSpace(parts[1])
+				diskInfo[key] = value
+			}
+			if err := scanner.Err(); err != nil {
+				continue
+			}
+
+			volName, okv := diskInfo["Volume Name"]
+			fsType, okf := diskInfo["File System Personality"]
+			if !okv || !okf {
+				continue
+			}
+
+			// Check if a filesystem type is FAT-based
+			if strings.Contains(strings.ToUpper(fsType), "FAT") {
+				points = append(points, mountPoint{
+					name: volName,
+					path: volumePath,
+				})
+			}
 		}
 		sort.Slice(points, func(i, j int) bool {
-			return points[i].path < points[j].name
+			return points[i].path < points[j].path
 		})
 		return points, nil
 	case "linux":
@@ -1396,6 +1417,68 @@ func usage(command string) {
 
 }
 
+// Print diagnostics very similar to the -json flag in Go.
+func printBuildOutput(err error, jsonDiagnostics bool) {
+	if err == nil {
+		return // nothing to report
+	}
+
+	if jsonDiagnostics {
+		workingDir, getwdErr := os.Getwd()
+		if getwdErr != nil {
+			workingDir = ""
+		}
+
+		type jsonDiagnosticOutput struct {
+			ImportPath string
+			Action     string
+			Output     string `json:",omitempty"`
+			StartPos   string `json:",omitempty"` // non-standard
+			EndPos     string `json:",omitempty"` // non-standard
+		}
+
+		for _, diags := range diagnostics.CreateDiagnostics(err) {
+			if diags.ImportPath != "" {
+				output, _ := json.Marshal(jsonDiagnosticOutput{
+					ImportPath: diags.ImportPath,
+					Action:     "build-output",
+					Output:     "# " + diags.ImportPath + "\n",
+				})
+				os.Stdout.Write(append(output, '\n'))
+			}
+			for _, diag := range diags.Diagnostics {
+				w := &bytes.Buffer{}
+				diag.WriteTo(w, workingDir)
+				data := jsonDiagnosticOutput{
+					ImportPath: diags.ImportPath,
+					Action:     "build-output",
+					Output:     w.String(),
+				}
+				if diag.StartPos.IsValid() && diag.EndPos.IsValid() {
+					// Include the non-standard StartPos/EndPos values. These
+					// are useful for the TinyGo Playground to show better error
+					// messages.
+					data.StartPos = diagnostics.RelativePosition(diag.StartPos, workingDir).String()
+					data.EndPos = diagnostics.RelativePosition(diag.EndPos, workingDir).String()
+				}
+				output, _ := json.Marshal(data)
+				os.Stdout.Write(append(output, '\n'))
+			}
+
+			// Emit the "Action":"build-fail" JSON.
+			output, _ := json.Marshal(jsonDiagnosticOutput{
+				ImportPath: diags.ImportPath,
+				Action:     "build-fail",
+			})
+			os.Stdout.Write(append(output, '\n'))
+		}
+		os.Exit(1)
+	}
+
+	// Regular diagnostic handling.
+	handleCompilerError(err)
+}
+
 func handleCompilerError(err error) {
 	if err != nil {
 		wd, getwdErr := os.Getwd()
@@ -1492,9 +1575,9 @@ func main() {
 	command := os.Args[1]
 
 	opt := flag.String("opt", "z", "optimization level: 0, 1, 2, s, z")
-	gc := flag.String("gc", "", "garbage collector to use (none, leaking, conservative)")
+	gc := flag.String("gc", "", "garbage collector to use (none, leaking, conservative, custom, precise, boehm)")
 	panicStrategy := flag.String("panic", "print", "panic strategy (print, trap)")
-	scheduler := flag.String("scheduler", "", "which scheduler to use (none, tasks, asyncify)")
+	scheduler := flag.String("scheduler", "", "which scheduler to use (none, tasks, cores, threads, asyncify)")
 	serial := flag.String("serial", "", "which serial output to use (none, uart, usb, rtt)")
 	work := flag.Bool("work", false, "print the name of the temporary build directory and do not delete this directory on exit")
 	interpTimeout := flag.Duration("interp-timeout", 180*time.Second, "interp optimization pass timeout")
@@ -1512,8 +1595,10 @@ func main() {
 	printStacks := flag.Bool("print-stacks", false, "print stack sizes of goroutines")
 	printAllocsString := flag.String("print-allocs", "", "regular expression of functions for which heap allocations should be printed")
 	printCommands := flag.Bool("x", false, "Print commands")
+	flagJSON := flag.Bool("json", false, "print output in JSON format")
 	parallelism := flag.Int("p", runtime.GOMAXPROCS(0), "the number of build jobs that can run in parallel")
 	nodebug := flag.Bool("no-debug", false, "strip debug information")
+	nobounds := flag.Bool("nobounds", false, "do not emit bounds checks")
 	ocdCommandsString := flag.String("ocd-commands", "", "OpenOCD commands, overriding target spec (can specify multiple separated by commas)")
 	ocdOutput := flag.Bool("ocd-output", false, "print OCD daemon output during debug")
 	port := flag.String("port", "", "flash port (can specify multiple candidates separated by commas)")
@@ -1536,10 +1621,7 @@ func main() {
 	// development it can be useful to not emit debug information at all.
 	skipDwarf := flag.Bool("internal-nodwarf", false, "internal flag, use -no-debug instead")
 
-	var flagJSON, flagDeps, flagTest bool
-	if command == "help" || command == "list" || command == "info" || command == "build" {
-		flag.BoolVar(&flagJSON, "json", false, "print data in JSON format")
-	}
+	var flagDeps, flagTest bool
 	if command == "help" || command == "list" {
 		flag.BoolVar(&flagDeps, "deps", false, "supply -deps flag to go list")
 		flag.BoolVar(&flagTest, "test", false, "supply -test flag to go list")
@@ -1625,6 +1707,7 @@ func main() {
 		SkipDWARF:       *skipDwarf,
 		Semaphore:       make(chan struct{}, *parallelism),
 		Debug:           !*nodebug,
+		Nobounds:        *nobounds,
 		PrintSizes:      *printSize,
 		PrintStacks:     *printStacks,
 		PrintAllocs:     printAllocs,
@@ -1634,7 +1717,6 @@ func main() {
 		Programmer:      *programmer,
 		OpenOCDCommands: ocdCommands,
 		LLVMFeatures:    *llvmFeatures,
-		PrintJSON:       flagJSON,
 		Monitor:         *monitor,
 		BaudRate:        *baudrate,
 		Timeout:         *timeout,
@@ -1684,33 +1766,20 @@ func main() {
 			usage(command)
 			os.Exit(1)
 		}
-		if options.Target == "" {
-			switch {
-			case options.GOARCH == "wasm":
-				switch options.GOOS {
-				case "js":
-					options.Target = "wasm"
-				case "wasip1":
-					options.Target = "wasip1"
-				case "wasip2":
-					options.Target = "wasip2"
-				default:
-					fmt.Fprintln(os.Stderr, "GOARCH=wasm but GOOS is not set correctly. Please set GOOS to wasm, wasip1, or wasip2.")
-					os.Exit(1)
-				}
-			case filepath.Ext(outpath) == ".wasm":
-				fmt.Fprintln(os.Stderr, "you appear to want to build a wasm file, but have not specified either a target flag, or the GOARCH/GOOS to use.")
-				os.Exit(1)
-			}
+		if filepath.Ext(outpath) == ".wasm" && options.GOARCH != "wasm" && options.Target == "" {
+			fmt.Fprintln(os.Stderr, "you appear to want to build a wasm file, but have not specified either a target flag, or the GOARCH/GOOS to use.")
+			os.Exit(1)
 		}
 
-		err := Build(pkgName, outpath, options)
+		config, err := builder.NewConfig(options)
 		handleCompilerError(err)
+		err = Build(pkgName, outpath, config)
+		printBuildOutput(err, *flagJSON)
 	case "flash", "gdb", "lldb":
 		pkgName := filepath.ToSlash(flag.Arg(0))
 		if command == "flash" {
 			err := Flash(pkgName, *port, options)
-			handleCompilerError(err)
+			printBuildOutput(err, *flagJSON)
 		} else {
 			if !options.Debug {
 				fmt.Fprintln(os.Stderr, "Debug disabled while running debugger?")
@@ -1718,7 +1787,7 @@ func main() {
 				os.Exit(1)
 			}
 			err := Debug(command, pkgName, *ocdOutput, options)
-			handleCompilerError(err)
+			printBuildOutput(err, *flagJSON)
 		}
 	case "run":
 		if flag.NArg() < 1 {
@@ -1728,7 +1797,7 @@ func main() {
 		}
 		pkgName := filepath.ToSlash(flag.Arg(0))
 		err := Run(pkgName, options, flag.Args()[1:])
-		handleCompilerError(err)
+		printBuildOutput(err, *flagJSON)
 	case "test":
 		var pkgNames []string
 		for i := 0; i < flag.NArg(); i++ {
@@ -1856,16 +1925,13 @@ func main() {
 			os.Exit(1)
 		}
 		config.GoMinorVersion = 0 // this avoids creating the list of Go1.x build tags.
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+
 		cachedGOROOT, err := loader.GetCachedGoroot(config)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if flagJSON {
+		if *flagJSON {
 			json, _ := json.MarshalIndent(struct {
 				Target     *compileopts.TargetSpec `json:"target"`
 				GOROOT     string                  `json:"goroot"`
@@ -1907,7 +1973,7 @@ func main() {
 			os.Exit(1)
 		}
 		var extraArgs []string
-		if flagJSON {
+		if *flagJSON {
 			extraArgs = append(extraArgs, "-json")
 		}
 		if flagDeps {

@@ -178,6 +178,21 @@ func (spec *TargetSpec) resolveInherits() error {
 
 // Load a target specification.
 func LoadTarget(options *Options) (*TargetSpec, error) {
+	if options.Target == "" && options.GOARCH == "wasm" {
+		// Set a specific target if we're building from a known GOOS/GOARCH
+		// combination that is defined in a target JSON file.
+		switch options.GOOS {
+		case "js":
+			options.Target = "wasm"
+		case "wasip1":
+			options.Target = "wasip1"
+		case "wasip2":
+			options.Target = "wasip2"
+		default:
+			return nil, errors.New("GOARCH=wasm but GOOS is not set correctly. Please set GOOS to wasm, wasip1, or wasip2.")
+		}
+	}
+
 	if options.Target == "" {
 		return defaultTarget(options)
 	}
@@ -247,7 +262,6 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		GOOS:             options.GOOS,
 		GOARCH:           options.GOARCH,
 		BuildTags:        []string{options.GOOS, options.GOARCH},
-		Scheduler:        "tasks",
 		Linker:           "cc",
 		DefaultStackSize: 1024 * 64, // 64kB
 		GDB:              []string{"gdb"},
@@ -365,12 +379,13 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 	llvmvendor := "unknown"
 	switch options.GOOS {
 	case "darwin":
-		spec.GC = "precise"
+		spec.GC = "boehm"
 		platformVersion := "10.12.0"
 		if options.GOARCH == "arm64" {
 			platformVersion = "11.0.0" // first macosx platform with arm64 support
 		}
 		llvmvendor = "apple"
+		spec.Scheduler = "tasks"
 		spec.Linker = "ld.lld"
 		spec.Libc = "darwin-libSystem"
 		// Use macosx* instead of darwin, otherwise darwin/arm64 will refer to
@@ -389,6 +404,7 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 			"src/runtime/signal.c")
 	case "linux":
 		spec.GC = "boehm"
+		spec.Scheduler = "threads"
 		spec.Linker = "ld.lld"
 		spec.RTLib = "compiler-rt"
 		spec.Libc = "musl"
@@ -409,20 +425,30 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		}
 		spec.ExtraFiles = append(spec.ExtraFiles,
 			"src/internal/futex/futex_linux.c",
+			"src/internal/task/task_threads.c",
 			"src/runtime/runtime_unix.c",
 			"src/runtime/signal.c")
 	case "windows":
-		spec.GC = "precise"
+		spec.GC = "boehm"
+		spec.Scheduler = "tasks"
 		spec.Linker = "ld.lld"
 		spec.Libc = "mingw-w64"
-		// Note: using a medium code model, low image base and no ASLR
-		// because Go doesn't really need those features. ASLR patches
-		// around issues for unsafe languages like C/C++ that are not
-		// normally present in Go (without explicitly opting in).
-		// For more discussion:
-		// https://groups.google.com/g/Golang-nuts/c/Jd9tlNc6jUE/m/Zo-7zIP_m3MJ?pli=1
 		switch options.GOARCH {
+		case "386":
+			spec.LDFlags = append(spec.LDFlags,
+				"-m", "i386pe",
+				"--major-os-version", "4",
+				"--major-subsystem-version", "4",
+			)
+			// __udivdi3 is not present in ucrt it seems.
+			spec.RTLib = "compiler-rt"
 		case "amd64":
+			// Note: using a medium code model, low image base and no ASLR
+			// because Go doesn't really need those features. ASLR patches
+			// around issues for unsafe languages like C/C++ that are not
+			// normally present in Go (without explicitly opting in).
+			// For more discussion:
+			// https://groups.google.com/g/Golang-nuts/c/Jd9tlNc6jUE/m/Zo-7zIP_m3MJ?pli=1
 			spec.LDFlags = append(spec.LDFlags,
 				"-m", "i386pep",
 				"--image-base", "0x400000",
@@ -442,6 +468,12 @@ func defaultTarget(options *Options) (*TargetSpec, error) {
 		return nil, fmt.Errorf("GOOS=%s but GOARCH is unset. Please set GOARCH to wasm", options.GOOS)
 	default:
 		return nil, fmt.Errorf("unknown GOOS=%s", options.GOOS)
+	}
+
+	if spec.GC == "boehm" {
+		// Add this file only when needed. This fixes a build failure on
+		// Windows.
+		spec.ExtraFiles = append(spec.ExtraFiles, "src/runtime/gc_boehm.c")
 	}
 
 	// Target triples (which actually have four components, but are called

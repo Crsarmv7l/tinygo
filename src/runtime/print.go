@@ -1,24 +1,11 @@
 package runtime
 
 import (
-	"internal/task"
 	"unsafe"
 )
 
 type stringer interface {
 	String() string
-}
-
-// Lock to make sure print calls do not interleave.
-// This is a no-op lock on systems that do not have parallelism.
-var printLock task.PMutex
-
-func printlock() {
-	printLock.Lock()
-}
-
-func printunlock() {
-	printLock.Unlock()
 }
 
 //go:nobounds

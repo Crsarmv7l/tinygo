@@ -122,6 +122,9 @@ func (c *compilerContext) pkgPathPtr(pkgpath string) llvm.Value {
 // This function returns a pointer to the 'kind' field (which might not be the
 // first field in the struct).
 func (c *compilerContext) getTypeCode(typ types.Type) llvm.Value {
+	// Resolve alias types: alias types are resolved at compile time.
+	typ = types.Unalias(typ)
+
 	ms := c.program.MethodSets.MethodSet(typ)
 	hasMethodSet := ms.Len() != 0
 	_, isInterface := typ.Underlying().(*types.Interface)
@@ -512,7 +515,7 @@ var basicTypeNames = [...]string{
 // interface lowering pass to assign type codes as expected by the reflect
 // package. See getTypeCodeNum.
 func getTypeCodeName(t types.Type) (string, bool) {
-	switch t := t.(type) {
+	switch t := types.Unalias(t).(type) {
 	case *types.Named:
 		if t.Obj().Parent() != t.Obj().Pkg().Scope() {
 			return "named:" + t.String() + "$local", true
@@ -942,7 +945,7 @@ func signature(sig *types.Signature) string {
 // normalization around `byte` vs `uint8` for example.
 func typestring(t types.Type) string {
 	// See: https://github.com/golang/go/blob/master/src/go/types/typestring.go
-	switch t := t.(type) {
+	switch t := types.Unalias(t).(type) {
 	case *types.Array:
 		return "[" + strconv.FormatInt(t.Len(), 10) + "]" + typestring(t.Elem())
 	case *types.Basic:

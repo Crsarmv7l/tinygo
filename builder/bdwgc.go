@@ -5,6 +5,7 @@ package builder
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/tinygo-org/tinygo/goenv"
 )
@@ -13,7 +14,7 @@ var BoehmGC = Library{
 	name: "bdwgc",
 	cflags: func(target, headerPath string) []string {
 		libdir := filepath.Join(goenv.Get("TINYGOROOT"), "lib/bdwgc")
-		return []string{
+		flags := []string{
 			// use a modern environment
 			"-DUSE_MMAP",              // mmap is available
 			"-DUSE_MUNMAP",            // return memory to the OS using munmap
@@ -24,6 +25,12 @@ var BoehmGC = Library{
 			"-DALL_INTERIOR_POINTERS",  // scan interior pointers (needed for Go)
 			"-DIGNORE_DYNAMIC_LOADING", // we don't support dynamic loading at the moment
 			"-DNO_GETCONTEXT",          // musl doesn't support getcontext()
+			"-DGC_DISABLE_INCREMENTAL", // don't mess with SIGSEGV and such
+
+			// Use a minimal environment.
+			"-DNO_MSGBOX_ON_ERROR", // don't call MessageBoxA on Windows
+			"-DDONT_USE_ATEXIT",
+			"-DNO_GETENV",
 
 			// Special flag to work around the lack of __data_start in ld.lld.
 			// TODO: try to fix this in LLVM/lld directly so we don't have to
@@ -36,18 +43,21 @@ var BoehmGC = Library{
 			// Assertions can be enabled while debugging GC issues.
 			//"-DGC_ASSERTIONS",
 
-			// Threading is not yet supported, so these are disabled.
+			// We use our own way of dealing with threads (that is a bit hacky).
+			// See src/runtime/gc_boehm.go.
 			//"-DGC_THREADS",
 			//"-DTHREAD_LOCAL_ALLOC",
 
 			"-I" + libdir + "/include",
 		}
+		return flags
 	},
+	needsLibc: true,
 	sourceDir: func() string {
 		return filepath.Join(goenv.Get("TINYGOROOT"), "lib/bdwgc")
 	},
-	librarySources: func(target string) ([]string, error) {
-		return []string{
+	librarySources: func(target string, _ bool) ([]string, error) {
+		sources := []string{
 			"allchblk.c",
 			"alloc.c",
 			"blacklst.c",
@@ -63,9 +73,16 @@ var BoehmGC = Library{
 			"new_hblk.c",
 			"obj_map.c",
 			"os_dep.c",
-			"pthread_stop_world.c",
-			"pthread_support.c",
 			"reclaim.c",
-		}, nil
+		}
+		if strings.Split(target, "-")[2] == "windows" {
+			// Due to how the linker on Windows works (that doesn't allow
+			// undefined functions), we need to include these extra files.
+			sources = append(sources,
+				"mallocx.c",
+				"ptr_chck.c",
+			)
+		}
+		return sources, nil
 	},
 }

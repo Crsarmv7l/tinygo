@@ -8,13 +8,20 @@ LLVM_PROJECTDIR ?= llvm-project
 CLANG_SRC ?= $(LLVM_PROJECTDIR)/clang
 LLD_SRC ?= $(LLVM_PROJECTDIR)/lld
 
+ifeq ($(OS),Windows_NT)
+    # avoid calling uname on Windows
+    uname := Windows_NT
+else
+    uname := $(shell uname -s)
+endif
+
 # Try to autodetect LLVM build tools.
 # Versions are listed here in descending priority order.
 LLVM_VERSIONS = 19 18 17 16 15
 errifempty = $(if $(1),$(1),$(error $(2)))
 detect = $(shell which $(call errifempty,$(firstword $(foreach p,$(2),$(shell command -v $(p) 2> /dev/null && echo $(p)))),failed to locate $(1) at any of: $(2)))
 toolSearchPathsVersion = $(1)-$(2)
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(uname),Darwin)
 	# Also explicitly search Brew's copy, which is not in PATH by default.
 	BREW_PREFIX := $(shell brew --prefix)
 	toolSearchPathsVersion += $(BREW_PREFIX)/opt/llvm@$(2)/bin/$(1)-$(2) $(BREW_PREFIX)/opt/llvm@$(2)/bin/$(1)
@@ -27,7 +34,6 @@ LLVM_NM ?= $(call findLLVMTool,llvm-nm)
 
 # Go binary and GOROOT to select
 GO ?= go
-export GOROOT = $(shell $(GO) env GOROOT)
 
 # Flags to pass to go test.
 GOTESTFLAGS ?=
@@ -38,14 +44,10 @@ TINYGO ?= $(call detect,tinygo,tinygo $(CURDIR)/build/tinygo)
 
 # Check for ccache if the user hasn't set it to on or off.
 ifeq (, $(CCACHE))
-    # Use CCACHE for LLVM if possible
-    ifneq (, $(shell command -v ccache 2> /dev/null))
-        CCACHE := ON
-    else
-        CCACHE := OFF
-    endif
+    LLVM_OPTION += '-DLLVM_CCACHE_BUILD=$(if $(shell command -v ccache 2> /dev/null),ON,OFF)'
+else
+    LLVM_OPTION += '-DLLVM_CCACHE_BUILD=$(CCACHE)'
 endif
-LLVM_OPTION += '-DLLVM_CCACHE_BUILD=$(CCACHE)'
 
 # Allow enabling LLVM assertions
 ifeq (1, $(ASSERT))
@@ -127,14 +129,14 @@ ifeq ($(OS),Windows_NT)
 
     USE_SYSTEM_BINARYEN ?= 1
 
-else ifeq ($(shell uname -s),Darwin)
+else ifeq ($(uname),Darwin)
     MD5SUM ?= md5
 
     CGO_LDFLAGS += -lxar
 
     USE_SYSTEM_BINARYEN ?= 1
 
-else ifeq ($(shell uname -s),FreeBSD)
+else ifeq ($(uname),FreeBSD)
     MD5SUM ?= md5
     START_GROUP = -Wl,--start-group
     END_GROUP = -Wl,--end-group
@@ -259,13 +261,6 @@ build/wasm-opt$(EXE):
 	cp lib/binaryen/bin/wasm-opt$(EXE) build/wasm-opt$(EXE)
 endif
 
-# Build wasi-libc sysroot
-.PHONY: wasi-libc
-wasi-libc: lib/wasi-libc/sysroot/lib/wasm32-wasi/libc.a
-lib/wasi-libc/sysroot/lib/wasm32-wasi/libc.a:
-	@if [ ! -e lib/wasi-libc/Makefile ]; then echo "Submodules have not been downloaded. Please download them using:\n  git submodule update --init"; exit 1; fi
-	cd lib/wasi-libc && $(MAKE) -j4 EXTRA_CFLAGS="-O2 -g -DNDEBUG -mnontrapping-fptoint -msign-ext" MALLOC_IMPL=none CC="$(CLANG)" AR=$(LLVM_AR) NM=$(LLVM_NM)
-
 # Generate WASI syscall bindings
 WASM_TOOLS_MODULE=go.bytecodealliance.org
 .PHONY: wasi-syscall
@@ -280,20 +275,20 @@ wasi-cm:
 	rsync -rv --delete --exclude go.mod --exclude '*_test.go' --exclude '*_json.go' --exclude '*.md' --exclude LICENSE $(shell go list -modfile ./internal/wasm-tools/go.mod -m -f {{.Dir}} $(WASM_TOOLS_MODULE)/cm)/ ./src/internal/cm
 
 # Check for Node.js used during WASM tests.
-NODEJS_VERSION := $(word 1,$(subst ., ,$(shell node -v | cut -c 2-)))
 MIN_NODEJS_VERSION=18
 
 .PHONY: check-nodejs-version
 check-nodejs-version:
-ifeq (, $(shell which node))
-	@echo "Install NodeJS version 18+ to run tests."; exit 1;
-endif
-	@if [ $(NODEJS_VERSION) -lt $(MIN_NODEJS_VERSION) ]; then echo "Install NodeJS version 18+ to run tests."; exit 1; fi
+	@# Check whether NodeJS is available.
+	@if ! command -v node 2>&1 >/dev/null; then echo "Install NodeJS version ${MIN_NODEJS_VERSION}+ to run tests."; exit 1; fi
+
+	@# Check whether the version is high enough.
+	@if [ "`node -v | sed 's/v\([0-9]\+\).*/\\1/g'`" -lt $(MIN_NODEJS_VERSION) ]; then echo "Install NodeJS version $(MIN_NODEJS_VERSION)+ to run tests."; exit 1; fi
 
 tinygo: ## Build the TinyGo compiler
 	@if [ ! -f "$(LLVM_BUILDDIR)/bin/llvm-config" ]; then echo "Fetch and build LLVM first by running:"; echo "  $(MAKE) llvm-source"; echo "  $(MAKE) $(LLVM_BUILDDIR)"; exit 1; fi
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GOENVFLAGS) $(GO) build -buildmode exe -o build/tinygo$(EXE) -tags "byollvm osusergo" .
-test: wasi-libc check-nodejs-version
+test: check-nodejs-version
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags "byollvm osusergo" $(GOTESTPKGS)
 
 # Standard library packages that pass tests on darwin, linux, wasi, and windows, but take over a minute in wasi
@@ -439,8 +434,8 @@ TEST_PACKAGES_NONBAREMETAL = \
 	$(nil)
 
 # Report platforms on which each standard library package is known to pass tests
-jointmp := $(shell echo /tmp/join.$$$$)
 report-stdlib-tests-pass:
+	$(eval jointmp := $(shell echo /tmp/join.$$$$))
 	@for t in $(TEST_PACKAGES_DARWIN); do echo "$$t darwin"; done | sort > $(jointmp).darwin
 	@for t in $(TEST_PACKAGES_LINUX); do echo "$$t linux"; done | sort > $(jointmp).linux
 	@for t in $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW); do echo "$$t darwin linux wasi windows"; done | sort > $(jointmp).portable
@@ -449,11 +444,11 @@ report-stdlib-tests-pass:
 	@rm $(jointmp).*
 
 # Standard library packages that pass tests quickly on the current platform
-ifeq ($(shell uname),Darwin)
+ifeq ($(uname),Darwin)
 TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_DARWIN)
 TEST_IOFS := true
 endif
-ifeq ($(shell uname),Linux)
+ifeq ($(uname),Linux)
 TEST_PACKAGES_HOST := $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_LINUX)
 TEST_IOFS := true
 endif
@@ -526,9 +521,9 @@ test-corpus:
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags byollvm -run TestCorpus . -corpus=testdata/corpus.yaml
 test-corpus-fast:
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags byollvm -run TestCorpus -short . -corpus=testdata/corpus.yaml
-test-corpus-wasi: wasi-libc
+test-corpus-wasi:
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags byollvm -run TestCorpus . -corpus=testdata/corpus.yaml -target=wasip1
-test-corpus-wasip2: wasi-libc
+test-corpus-wasip2:
 	CGO_CPPFLAGS="$(CGO_CPPFLAGS)" CGO_CXXFLAGS="$(CGO_CXXFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GOTESTFLAGS) -timeout=1h -buildmode exe -tags byollvm -run TestCorpus . -corpus=testdata/corpus.yaml -target=wasip2
 
 .PHONY: testchdir
@@ -631,7 +626,11 @@ endif
 	@$(MD5SUM) test.hex
 	$(TINYGO) build -size short -o test.hex -target=microbit-v2-s113v7  examples/microbit-blink
 	@$(MD5SUM) test.hex
+	$(TINYGO) build -size short -o test.hex -target=microbit-v2-s140v7  examples/microbit-blink
+	@$(MD5SUM) test.hex
 	$(TINYGO) build -size short -o test.hex -target=nrf52840-mdk        examples/blinky1
+	@$(MD5SUM) test.hex
+	$(TINYGO) build -size short -o test.hex -target=btt-skr-pico        examples/uart
 	@$(MD5SUM) test.hex
 	$(TINYGO) build -size short -o test.hex -target=pca10031            examples/blinky1
 	@$(MD5SUM) test.hex
@@ -795,6 +794,10 @@ endif
 	@$(MD5SUM) test.hex
 	$(TINYGO) build -size short -o test.hex -target=feather-nrf52840    examples/usb-midi
 	@$(MD5SUM) test.hex
+	$(TINYGO) build -size short -o test.hex -target=pico    			examples/usb-storage
+	@$(MD5SUM) test.hex
+	$(TINYGO) build -size short -o test.hex -target=pico2    			examples/usb-storage
+	@$(MD5SUM) test.hex
 	$(TINYGO) build -size short -o test.hex -target=nrf52840-s140v6-uf2-generic	examples/machinetest
 	@$(MD5SUM) test.hex
 ifneq ($(STM32), 0)
@@ -939,14 +942,15 @@ endif
 wasmtest:
 	$(GO) test ./tests/wasm
 
-build/release: tinygo gen-device wasi-libc $(if $(filter 1,$(USE_SYSTEM_BINARYEN)),,binaryen)
+build/release: tinygo gen-device $(if $(filter 1,$(USE_SYSTEM_BINARYEN)),,binaryen)
 	@mkdir -p build/release/tinygo/bin
 	@mkdir -p build/release/tinygo/lib/bdwgc
 	@mkdir -p build/release/tinygo/lib/clang/include
 	@mkdir -p build/release/tinygo/lib/CMSIS/CMSIS
 	@mkdir -p build/release/tinygo/lib/macos-minimal-sdk
+	@mkdir -p build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
+	@mkdir -p build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
 	@mkdir -p build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
-	@mkdir -p build/release/tinygo/lib/mingw-w64/mingw-w64-crt/stdio
 	@mkdir -p build/release/tinygo/lib/mingw-w64/mingw-w64-headers/defaults
 	@mkdir -p build/release/tinygo/lib/musl/arch
 	@mkdir -p build/release/tinygo/lib/musl/crt
@@ -954,7 +958,7 @@ build/release: tinygo gen-device wasi-libc $(if $(filter 1,$(USE_SYSTEM_BINARYEN
 	@mkdir -p build/release/tinygo/lib/nrfx
 	@mkdir -p build/release/tinygo/lib/picolibc/newlib/libc
 	@mkdir -p build/release/tinygo/lib/picolibc/newlib/libm
-	@mkdir -p build/release/tinygo/lib/wasi-libc/libc-bottom-half/headers
+	@mkdir -p build/release/tinygo/lib/wasi-libc/libc-bottom-half
 	@mkdir -p build/release/tinygo/lib/wasi-libc/libc-top-half/musl/arch
 	@mkdir -p build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
 	@mkdir -p build/release/tinygo/lib/wasi-cli/
@@ -977,6 +981,7 @@ endif
 	@cp -rp lib/musl/crt/crt1.c          build/release/tinygo/lib/musl/crt
 	@cp -rp lib/musl/COPYRIGHT           build/release/tinygo/lib/musl
 	@cp -rp lib/musl/include             build/release/tinygo/lib/musl
+	@cp -rp lib/musl/src/conf            build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/ctype           build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/env             build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/errno           build/release/tinygo/lib/musl/src
@@ -1001,12 +1006,20 @@ endif
 	@cp -rp lib/musl/src/time            build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/unistd          build/release/tinygo/lib/musl/src
 	@cp -rp lib/musl/src/process         build/release/tinygo/lib/musl/src
+	@cp -rp lib/mingw-w64/mingw-w64-crt/crt/pseudo-reloc.c          build/release/tinygo/lib/mingw-w64/mingw-w64-crt/crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/def-include                 build/release/tinygo/lib/mingw-w64/mingw-w64-crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/gdtoa                       build/release/tinygo/lib/mingw-w64/mingw-w64-crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/include                     build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/api-ms-win-crt-* build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
+	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/advapi32.def.in  build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
 	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/kernel32.def.in  build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
-	@cp -rp lib/mingw-w64/mingw-w64-crt/stdio/ucrt_*                build/release/tinygo/lib/mingw-w64/mingw-w64-crt/stdio
+	@cp -rp lib/mingw-w64/mingw-w64-crt/lib-common/msvcrt.def.in    build/release/tinygo/lib/mingw-w64/mingw-w64-crt/lib-common
+	@cp -rp lib/mingw-w64/mingw-w64-crt/math/x86                    build/release/tinygo/lib/mingw-w64/mingw-w64-crt/math
+	@cp -rp lib/mingw-w64/mingw-w64-crt/misc                        build/release/tinygo/lib/mingw-w64/mingw-w64-crt
+	@cp -rp lib/mingw-w64/mingw-w64-crt/stdio                       build/release/tinygo/lib/mingw-w64/mingw-w64-crt
 	@cp -rp lib/mingw-w64/mingw-w64-headers/crt/                    build/release/tinygo/lib/mingw-w64/mingw-w64-headers
 	@cp -rp lib/mingw-w64/mingw-w64-headers/defaults/include        build/release/tinygo/lib/mingw-w64/mingw-w64-headers/defaults
+	@cp -rp lib/mingw-w64/mingw-w64-headers/include                 build/release/tinygo/lib/mingw-w64/mingw-w64-headers
 	@cp -rp lib/nrfx/*                   build/release/tinygo/lib/nrfx
 	@cp -rp lib/picolibc/newlib/libc/ctype       build/release/tinygo/lib/picolibc/newlib/libc
 	@cp -rp lib/picolibc/newlib/libc/include     build/release/tinygo/lib/picolibc/newlib/libc
@@ -1016,15 +1029,36 @@ endif
 	@cp -rp lib/picolibc/newlib/libm/common      build/release/tinygo/lib/picolibc/newlib/libm
 	@cp -rp lib/picolibc/newlib/libm/math        build/release/tinygo/lib/picolibc/newlib/libm
 	@cp -rp lib/picolibc-stdio.c         build/release/tinygo/lib
-	@cp -rp lib/wasi-libc/libc-bottom-half/headers/public           build/release/tinygo/lib/wasi-libc/libc-bottom-half/headers
+	@cp -rp lib/wasi-libc/libc-bottom-half/cloudlibc                build/release/tinygo/lib/wasi-libc/libc-bottom-half
+	@cp -rp lib/wasi-libc/libc-bottom-half/headers                  build/release/tinygo/lib/wasi-libc/libc-bottom-half
+	@cp -rp lib/wasi-libc/libc-bottom-half/sources                  build/release/tinygo/lib/wasi-libc/libc-bottom-half
+	@cp -rp lib/wasi-libc/libc-top-half/headers                     build/release/tinygo/lib/wasi-libc/libc-top-half
 	@cp -rp lib/wasi-libc/libc-top-half/musl/arch/generic           build/release/tinygo/lib/wasi-libc/libc-top-half/musl/arch
 	@cp -rp lib/wasi-libc/libc-top-half/musl/arch/wasm32            build/release/tinygo/lib/wasi-libc/libc-top-half/musl/arch
+	@cp -rp lib/wasi-libc/libc-top-half/musl/include                build/release/tinygo/lib/wasi-libc/libc-top-half/musl
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/conf               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/dirent             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/env                build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/errno              build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/exit               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/fcntl              build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/fenv               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
 	@cp -rp lib/wasi-libc/libc-top-half/musl/src/include            build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
 	@cp -rp lib/wasi-libc/libc-top-half/musl/src/internal           build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/legacy             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/locale             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
 	@cp -rp lib/wasi-libc/libc-top-half/musl/src/math               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/misc               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/multibyte          build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/network            build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/stat               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/stdio              build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/stdlib             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
 	@cp -rp lib/wasi-libc/libc-top-half/musl/src/string             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
-	@cp -rp lib/wasi-libc/libc-top-half/musl/include                build/release/tinygo/lib/wasi-libc/libc-top-half/musl
-	@cp -rp lib/wasi-libc/sysroot                                   build/release/tinygo/lib/wasi-libc/sysroot
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/thread             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/time               build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/musl/src/unistd             build/release/tinygo/lib/wasi-libc/libc-top-half/musl/src
+	@cp -rp lib/wasi-libc/libc-top-half/sources                     build/release/tinygo/lib/wasi-libc/libc-top-half
 	@cp -rp lib/wasi-cli/wit                                        build/release/tinygo/lib/wasi-cli/wit
 	@cp -rp llvm-project/compiler-rt/lib/builtins build/release/tinygo/lib/compiler-rt-builtins
 	@cp -rp llvm-project/compiler-rt/LICENSE.TXT  build/release/tinygo/lib/compiler-rt-builtins

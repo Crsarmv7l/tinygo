@@ -297,10 +297,10 @@ func (spi *SPI) tx(tx []byte) error {
 	var dreq uint32
 	if spi.Bus == rp.SPI0 {
 		ch = &dmaChannels[spi0DMAChannel]
-		dreq = 16 // DREQ_SPI0_TX
+		dreq = rp.DREQ_SPI0_TX
 	} else { // SPI1
 		ch = &dmaChannels[spi1DMAChannel]
-		dreq = 18 // DREQ_SPI1_TX
+		dreq = rp.DREQ_SPI1_TX
 	}
 
 	// Configure the DMA peripheral as follows:

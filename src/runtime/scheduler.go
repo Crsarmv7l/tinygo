@@ -4,7 +4,7 @@ import "internal/task"
 
 const schedulerDebug = false
 
-var mainExited bool
+var timerQueue *timerNode
 
 // Simple logging, for debugging.
 func scheduleLog(msg string) {
@@ -25,6 +25,31 @@ func scheduleLogChan(msg string, ch *channel, t *task.Task) {
 	if schedulerDebug {
 		println("---", msg, ch, t)
 	}
+}
+
+func timerQueueAdd(tn *timerNode) {
+	q := &timerQueue
+	for ; *q != nil; q = &(*q).next {
+		if tn.whenTicks() < (*q).whenTicks() {
+			// this will finish earlier than the next - insert here
+			break
+		}
+	}
+	tn.next = *q
+	*q = tn
+}
+
+func timerQueueRemove(t *timer) *timerNode {
+	for q := &timerQueue; *q != nil; q = &(*q).next {
+		if (*q).timer == t {
+			scheduleLog("removed timer")
+			n := *q
+			*q = (*q).next
+			return n
+		}
+	}
+	scheduleLog("did not remove timer")
+	return nil
 }
 
 // Goexit terminates the currently running goroutine. No other goroutines are affected.

@@ -2163,7 +2163,7 @@ func (f flashBlockDevice) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 // WriteAt writes the given number of bytes to the block device.
-// Only word (32 bits) length data can be programmed.
+// Data is written to the page buffer in 4-byte chunks, then saved to flash memory.
 // See SAM-D5x-E5x-Family-Data-Sheet-DS60001507.pdf page 591-592.
 // If the length of p is not long enough it will be padded with 0xFF bytes.
 // This method assumes that the destination is already erased.
@@ -2185,16 +2185,13 @@ func (f flashBlockDevice) WriteAt(p []byte, off int64) (n int, err error) {
 	waitWhileFlashBusy()
 
 	for j := 0; j < len(padded); j += int(f.WriteBlockSize()) {
-		// write first word using double-word low order word
-		*(*uint32)(unsafe.Pointer(address)) = binary.LittleEndian.Uint32(padded[j : j+int(f.WriteBlockSize()/2)])
-
-		// write second word using double-word high order word
-		*(*uint32)(unsafe.Add(unsafe.Pointer(address), uintptr(f.WriteBlockSize())/2)) = binary.LittleEndian.Uint32(padded[j+int(f.WriteBlockSize()/2) : j+int(f.WriteBlockSize())])
-
-		waitWhileFlashBusy()
+		// page buffer is 512 bytes long, but only 4 bytes can be written at once
+		for k := 0; k < int(f.WriteBlockSize()); k += 4 {
+			*(*uint32)(unsafe.Pointer(address + uintptr(k))) = binary.LittleEndian.Uint32(padded[j+k : j+k+4])
+		}
 
 		sam.NVMCTRL.SetADDR(uint32(address))
-		sam.NVMCTRL.CTRLB.Set(sam.NVMCTRL_CTRLB_CMD_WQW | (sam.NVMCTRL_CTRLB_CMDEX_KEY << sam.NVMCTRL_CTRLB_CMDEX_Pos))
+		sam.NVMCTRL.CTRLB.Set(sam.NVMCTRL_CTRLB_CMD_WP | (sam.NVMCTRL_CTRLB_CMDEX_KEY << sam.NVMCTRL_CTRLB_CMDEX_Pos))
 
 		waitWhileFlashBusy()
 
@@ -2213,7 +2210,7 @@ func (f flashBlockDevice) Size() int64 {
 	return int64(FlashDataEnd() - FlashDataStart())
 }
 
-const writeBlockSize = 8
+const writeBlockSize = 512
 
 // WriteBlockSize returns the block size in which data can be written to
 // memory. It can be used by a client to optimize writes, non-aligned writes
@@ -2357,6 +2354,5 @@ func (wd *watchdogImpl) Start() error {
 
 // Update the watchdog, indicating that `source` is healthy.
 func (wd *watchdogImpl) Update() {
-	// 0xA5 = magic value (see datasheet)
-	sam.WDT.CLEAR.Set(0xA5)
+	sam.WDT.CLEAR.Set(sam.WDT_CLEAR_CLEAR_KEY)
 }

@@ -1,4 +1,4 @@
-//go:build scheduler.tasks && cortexm
+//go:build (scheduler.tasks || scheduler.cores) && cortexm
 
 package task
 

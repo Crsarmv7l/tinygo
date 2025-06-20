@@ -248,7 +248,7 @@ func (b *builder) createMapIteratorNext(rangeVal ssa.Value, llvmRangeVal, it llv
 // can be compared with runtime.memequal.  Note that padding bytes are undef
 // and can alter two "equal" structs being equal when compared with memequal.
 func hashmapIsBinaryKey(keyType types.Type) bool {
-	switch keyType := keyType.(type) {
+	switch keyType := keyType.Underlying().(type) {
 	case *types.Basic:
 		return keyType.Info()&(types.IsBoolean|types.IsInteger) != 0
 	case *types.Pointer:
@@ -263,8 +263,6 @@ func hashmapIsBinaryKey(keyType types.Type) bool {
 		return true
 	case *types.Array:
 		return hashmapIsBinaryKey(keyType.Elem())
-	case *types.Named:
-		return hashmapIsBinaryKey(keyType.Underlying())
 	default:
 		return false
 	}

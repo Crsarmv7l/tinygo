@@ -58,15 +58,15 @@ type I2C struct {
 }
 
 var (
-	ErrInvalidI2CBaudrate  = errors.New("invalid i2c baudrate")
-	ErrInvalidTgtAddr      = errors.New("invalid target i2c address not in 0..0x80 or is reserved")
-	ErrI2CGeneric          = errors.New("i2c error")
-	ErrRP2040I2CDisable    = errors.New("i2c rp2040 peripheral timeout in disable")
-	errInvalidI2CSDA       = errors.New("invalid I2C SDA pin")
-	errInvalidI2CSCL       = errors.New("invalid I2C SCL pin")
-	ErrI2CAlreadyListening = errors.New("i2c already listening")
-	ErrI2CWrongMode        = errors.New("i2c wrong mode")
-	ErrI2CUnderflow        = errors.New("i2c underflow")
+	errInvalidI2CBaudrate  = errors.New("i2c: invalid baudrate")
+	errInvalidTgtAddr      = errors.New("i2c: invalid target address: not in 0..0x80 or is reserved")
+	errI2CGeneric          = errors.New("i2c: generic error")
+	errI2CDisable          = errors.New("i2c: peripheral timeout in disable")
+	errInvalidI2CSDA       = errors.New("i2c: invalid SDA pin")
+	errInvalidI2CSCL       = errors.New("i2c: invalid SCL pin")
+	errI2CAlreadyListening = errors.New("i2c: already listening")
+	errI2CWrongMode        = errors.New("i2c: wrong mode")
+	errI2CUnderflow        = errors.New("i2c: underflow")
 )
 
 // Tx performs a write and then a read transfer placing the result in
@@ -84,12 +84,9 @@ var (
 // Performs only a write transfer.
 func (i2c *I2C) Tx(addr uint16, w, r []byte) error {
 	if i2c.mode != I2CModeController {
-		return ErrI2CWrongMode
+		return errI2CWrongMode
 	}
-
-	// timeout in microseconds.
-	const timeout = 40 * 1000 // 40ms is a reasonable time for a real-time system.
-	return i2c.tx(uint8(addr), w, r, timeout)
+	return i2c.tx(uint8(addr), w, r)
 }
 
 // Listen starts listening for I2C requests sent to specified address
@@ -97,7 +94,7 @@ func (i2c *I2C) Tx(addr uint16, w, r []byte) error {
 // addr is the address to listen to
 func (i2c *I2C) Listen(addr uint16) error {
 	if i2c.mode != I2CModeTarget {
-		return ErrI2CWrongMode
+		return errI2CWrongMode
 	}
 
 	return i2c.listen(uint8(addr))
@@ -158,7 +155,7 @@ func (i2c *I2C) Configure(config I2CConfig) error {
 func (i2c *I2C) SetBaudRate(br uint32) error {
 
 	if br == 0 {
-		return ErrInvalidI2CBaudrate
+		return errInvalidI2CBaudrate
 	}
 
 	// I2C is synchronous design that runs from clk_sys
@@ -170,7 +167,7 @@ func (i2c *I2C) SetBaudRate(br uint32) error {
 	hcnt := period - lcnt
 	// Check for out-of-range divisors:
 	if hcnt > rp.I2C0_IC_FS_SCL_HCNT_IC_FS_SCL_HCNT_Msk || hcnt < 8 || lcnt > rp.I2C0_IC_FS_SCL_LCNT_IC_FS_SCL_LCNT_Msk || lcnt < 8 {
-		return ErrInvalidI2CBaudrate
+		return errInvalidI2CBaudrate
 	}
 
 	// Per I2C-bus specification a device in standard or fast mode must
@@ -190,7 +187,7 @@ func (i2c *I2C) SetBaudRate(br uint32) error {
 	}
 
 	if sdaTxHoldCnt > lcnt-2 {
-		return ErrInvalidI2CBaudrate
+		return errInvalidI2CBaudrate
 	}
 	err := i2c.disable()
 	if err != nil {
@@ -218,12 +215,12 @@ func (i2c *I2C) enable() {
 //
 //go:inline
 func (i2c *I2C) disable() error {
-	const MAX_T_POLL_COUNT = 64 // 64 us timeout corresponds to around 1000kb/s i2c transfer rate.
-	deadline := ticks() + MAX_T_POLL_COUNT
+	const timeout_us = 4_000
+	deadline := ticks() + timeout_us
 	i2c.Bus.IC_ENABLE.Set(0)
 	for i2c.Bus.IC_ENABLE_STATUS.Get()&1 != 0 {
 		if ticks() > deadline {
-			return ErrRP2040I2CDisable
+			return errI2CDisable
 		}
 	}
 	return nil
@@ -285,10 +282,11 @@ func (i2c *I2C) deinit() (resetVal uint32) {
 }
 
 // tx performs blocking write followed by read to I2C bus.
-func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
+func (i2c *I2C) tx(addr uint8, tx, rx []byte) (err error) {
+	const timeout_us = 4_000
 	deadline := ticks() + timeout_us
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
-		return ErrInvalidTgtAddr
+		return errInvalidTgtAddr
 	}
 	txlen := len(tx)
 	rxlen := len(rx)
@@ -338,7 +336,9 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 				return errI2CWriteTimeout // If there was a timeout, don't attempt to do anything else.
 			}
 
+			before := ticks()
 			gosched()
+			deadline += ticks() - before
 		}
 
 		abortReason = i2c.getAbortReason()
@@ -361,7 +361,9 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 					return errI2CWriteTimeout
 				}
 
+				before := ticks()
 				gosched()
+				deadline += ticks() - before
 			}
 			i2c.Bus.IC_CLR_STOP_DET.Get()
 		}
@@ -382,7 +384,9 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 			first := rxCtr == 0
 			last := rxCtr == rxlen-1
 			for i2c.writeAvailable() == 0 {
+				before := ticks()
 				gosched()
+				deadline += ticks() - before
 			}
 			i2c.Bus.IC_DATA_CMD.Set(
 				boolToBit(first && rxStart)<<rp.I2C0_IC_DATA_CMD_RESTART_Pos |
@@ -399,7 +403,9 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 					return errI2CReadTimeout // If there was a timeout, don't attempt to do anything else.
 				}
 
+				before := ticks()
 				gosched()
+				deadline += ticks() - before
 			}
 			if abort {
 				break
@@ -414,7 +420,7 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 		case abortReason == 0 || abortReason&rp.I2C0_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK != 0:
 			// No reported errors - seems to happen if there is nothing connected to the bus.
 			// Address byte not acknowledged
-			err = ErrI2CGeneric
+			err = errI2CGeneric
 		case abortReason&rp.I2C0_IC_TX_ABRT_SOURCE_ABRT_TXDATA_NOACK != 0:
 			// Address acknowledged, some data not acknowledged
 			fallthrough
@@ -428,7 +434,7 @@ func (i2c *I2C) tx(addr uint8, tx, rx []byte, timeout_us uint64) (err error) {
 // listen sets up for async handling of requests on the I2C bus.
 func (i2c *I2C) listen(addr uint8) error {
 	if addr >= 0x80 || isReservedI2CAddr(addr) {
-		return ErrInvalidTgtAddr
+		return errInvalidTgtAddr
 	}
 
 	err := i2c.disable()
@@ -491,7 +497,7 @@ func (i2c *I2C) Reply(buf []byte) error {
 	stat := i2c.Bus.IC_RAW_INTR_STAT.Get()
 
 	if stat&rp.I2C0_IC_INTR_MASK_M_RD_REQ == 0 {
-		return ErrI2CWrongMode
+		return errI2CWrongMode
 	}
 	i2c.Bus.IC_CLR_RD_REQ.Get() // clear restart
 

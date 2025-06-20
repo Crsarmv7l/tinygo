@@ -39,3 +39,9 @@ func reentrantCall(a, b int32) int32 {
 	println("reentrantCall result:", result)
 	return result
 }
+
+//go:wasmexport goroutineExit
+func goroutineExit() {
+	// Dummy, not a real test (since we have no scheduler).
+	println("goroutineExit: exit")
+}

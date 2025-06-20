@@ -53,13 +53,13 @@ func startTimer(tim *timer) {
 
 //go:linkname stopTimer time.stopTimer
 func stopTimer(tim *timer) bool {
-	return removeTimer(tim)
+	return removeTimer(tim) != nil
 }
 
 //go:linkname resetTimer time.resetTimer
 func resetTimer(tim *timer, when int64) bool {
 	tim.when = when
-	removed := removeTimer(tim)
+	n := removeTimer(tim)
 	startTimer(tim)
-	return removed
+	return n != nil
 }

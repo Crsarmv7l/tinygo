@@ -1,3 +1,5 @@
+//go:build tinygo.unicore
+
 package task
 
 // PMutex is a real mutex on systems that can be either preemptive or threaded,

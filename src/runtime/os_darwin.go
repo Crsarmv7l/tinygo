@@ -229,3 +229,38 @@ func call_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) int32
 
 //export tinygo_syscall6X
 func call_syscall6X(fn, a1, a2, a3, a4, a5, a6 uintptr) uintptr
+
+//go:linkname os_runtime_executable_path os.runtime_executable_path
+func os_runtime_executable_path() string {
+	argv := (*unsafe.Pointer)(unsafe.Pointer(main_argv))
+
+	// skip over argv
+	argv = (*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(argv), (uintptr(main_argc)+1)*unsafe.Sizeof(argv)))
+
+	// skip over envv
+	for (*argv) != nil {
+		argv = (*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(argv), unsafe.Sizeof(argv)))
+	}
+
+	// next string is exe path
+	argv = (*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(argv), unsafe.Sizeof(argv)))
+
+	cstr := unsafe.Pointer(*argv)
+	length := strlen(cstr)
+	argString := _string{
+		length: length,
+		ptr:    (*byte)(cstr),
+	}
+	executablePath := *(*string)(unsafe.Pointer(&argString))
+
+	// strip "executable_path=" prefix if available, it's added after OS X 10.11.
+	executablePath = stringsTrimPrefix(executablePath, "executable_path=")
+	return executablePath
+}
+
+func stringsTrimPrefix(s, prefix string) string {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):]
+	}
+	return s
+}

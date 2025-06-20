@@ -1,9 +1,9 @@
 module github.com/tinygo-org/tinygo
 
-go 1.19
+go 1.22.0
 
 require (
-	github.com/aykevl/go-wasm v0.0.2-0.20240825160117-b76c3f9f0982
+	github.com/aykevl/go-wasm v0.0.2-0.20250317121156-42b86c494139
 	github.com/blakesmith/ar v0.0.0-20150311145944-8bd4349a67f2
 	github.com/chromedp/cdproto v0.0.0-20220113222801-0725d94bb6ee
 	github.com/chromedp/chromedp v0.7.6
@@ -16,11 +16,11 @@ require (
 	github.com/sigurn/crc16 v0.0.0-20211026045750-20ab5afb07e3
 	github.com/tetratelabs/wazero v1.6.0
 	go.bug.st/serial v1.6.0
-	golang.org/x/net v0.26.0
-	golang.org/x/sys v0.21.0
-	golang.org/x/tools v0.22.1-0.20240621165957-db513b091504
+	golang.org/x/net v0.35.0
+	golang.org/x/sys v0.30.0
+	golang.org/x/tools v0.30.0
 	gopkg.in/yaml.v2 v2.4.0
-	tinygo.org/x/go-llvm v0.0.0-20250119132755-9dca92dfb4f9
+	tinygo.org/x/go-llvm v0.0.0-20250422114502-b8f170971e74
 )
 
 require (
@@ -33,5 +33,5 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/stretchr/testify v1.8.4 // indirect
-	golang.org/x/text v0.16.0 // indirect
+	golang.org/x/text v0.22.0 // indirect
 )

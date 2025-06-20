@@ -364,9 +364,22 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 						continue
 					}
 					nBytes := uint32(n * elemSize)
+					srcObj := mem.get(src.index())
 					dstObj := mem.getWritable(dst.index())
+					if srcObj.buffer == nil || dstObj.buffer == nil {
+						// If the buffer is nil, it means the slice is external.
+						// This can happen for example when copying data out of
+						// a //go:embed slice, which is not available at interp
+						// time.
+						// See: https://github.com/tinygo-org/tinygo/issues/4895
+						err := r.runAtRuntime(fn, inst, locals, &mem, indent)
+						if err != nil {
+							return nil, mem, err
+						}
+						continue
+					}
 					dstBuf := dstObj.buffer.asRawValue(r)
-					srcBuf := mem.get(src.index()).buffer.asRawValue(r)
+					srcBuf := srcObj.buffer.asRawValue(r)
 					copy(dstBuf.buf[dst.offset():dst.offset()+nBytes], srcBuf.buf[src.offset():])
 					dstObj.buffer = dstBuf
 					mem.put(dst.index(), dstObj)

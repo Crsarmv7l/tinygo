@@ -24,7 +24,8 @@
 		"--no-demangle"
 	],
 	"extra-files": [
-		"src/runtime/asm_tinygowasm.S"
+		"src/runtime/asm_tinygowasm.S",
+		"src/runtime/gc_boehm.c"
 	],
 	"emulator":      "node {root}/targets/wasm_exec.js {}"
 }

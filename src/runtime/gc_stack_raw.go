@@ -1,8 +1,19 @@
-//go:build (gc.conservative || gc.precise || gc.boehm) && !tinygo.wasm
+//go:build (gc.conservative || gc.precise || gc.boehm) && !tinygo.wasm && !scheduler.threads && !scheduler.cores
 
 package runtime
 
-import "internal/task"
+import (
+	"internal/task"
+	"sync/atomic"
+)
+
+// Unused.
+var gcScanState atomic.Uint32
+
+func gcMarkReachable() {
+	markStack()
+	findGlobals(markRoots)
+}
 
 // markStack marks all root pointers found on the stack.
 //
@@ -15,7 +26,7 @@ func markStack() {
 
 	if !task.OnSystemStack() {
 		// Mark system stack.
-		markRoots(getSystemStackPointer(), stackTop)
+		markRoots(task.SystemStack(), stackTop)
 	}
 }
 
@@ -35,4 +46,8 @@ func scanstack(sp uintptr) {
 		// This is a goroutine stack.
 		markCurrentGoroutineStack(sp)
 	}
+}
+
+func gcResumeWorld() {
+	// Nothing to do here (single threaded).
 }

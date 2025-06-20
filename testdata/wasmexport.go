@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"runtime"
+	"time"
+)
 
 func init() {
 	println("called init")
@@ -49,4 +52,16 @@ func reentrantCall(a, b int32) int32 {
 	result := callOutside(a, b)
 	println("reentrantCall result:", result)
 	return result
+}
+
+// Test for bug: https://github.com/tinygo-org/tinygo/issues/4874
+//
+//go:wasmexport goroutineExit
+func goroutineExit() {
+	go func() {
+		time.Sleep(time.Second * 10)
+		println("goroutineExit: exiting goroutine")
+	}()
+	runtime.Gosched()
+	println("goroutineExit: exit")
 }

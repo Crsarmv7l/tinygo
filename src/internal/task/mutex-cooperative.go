@@ -1,3 +1,5 @@
+//go:build tinygo.unicore
+
 package task
 
 type Mutex struct {

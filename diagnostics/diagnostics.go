@@ -10,6 +10,7 @@ import (
 	"go/types"
 	"io"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -23,6 +24,11 @@ import (
 type Diagnostic struct {
 	Pos token.Position
 	Msg string
+
+	// Start and end position, if available. For many errors these positions are
+	// not available, but for some they are.
+	StartPos token.Position
+	EndPos   token.Position
 }
 
 // One or multiple errors of a particular package.
@@ -114,12 +120,22 @@ func createPackageDiagnostic(err error) PackageDiagnostic {
 func createDiagnostics(err error) []Diagnostic {
 	switch err := err.(type) {
 	case types.Error:
-		return []Diagnostic{
-			{
-				Pos: err.Fset.Position(err.Pos),
-				Msg: err.Msg,
-			},
+		diag := Diagnostic{
+			Pos: err.Fset.Position(err.Pos),
+			Msg: err.Msg,
 		}
+		// There is a special unexported API since Go 1.16 that provides the
+		// range (start and end position) where the type error exists.
+		// There is no promise of backwards compatibility in future Go versions
+		// so we have to be extra careful here to be resilient.
+		v := reflect.ValueOf(err)
+		start := v.FieldByName("go116start")
+		end := v.FieldByName("go116end")
+		if start.IsValid() && end.IsValid() && start.Int() != end.Int() {
+			diag.StartPos = err.Fset.Position(token.Pos(start.Int()))
+			diag.EndPos = err.Fset.Position(token.Pos(end.Int()))
+		}
+		return []Diagnostic{diag}
 	case scanner.Error:
 		return []Diagnostic{
 			{
@@ -188,25 +204,29 @@ func (diag Diagnostic) WriteTo(w io.Writer, wd string) {
 		fmt.Fprintln(w, diag.Msg)
 		return
 	}
-	pos := diag.Pos // make a copy
-	if !strings.HasPrefix(pos.Filename, filepath.Join(goenv.Get("GOROOT"), "src")) && !strings.HasPrefix(pos.Filename, filepath.Join(goenv.Get("TINYGOROOT"), "src")) {
-		// This file is not from the standard library (either the GOROOT or the
-		// TINYGOROOT). Make the path relative, for easier reading.  Ignore any
-		// errors in the process (falling back to the absolute path).
-		pos.Filename = tryToMakePathRelative(pos.Filename, wd)
-	}
+	pos := RelativePosition(diag.Pos, wd)
 	fmt.Fprintf(w, "%s: %s\n", pos, diag.Msg)
 }
 
-// try to make the path relative to the current working directory. If any error
-// occurs, this error is ignored and the absolute path is returned instead.
-func tryToMakePathRelative(dir, wd string) string {
+// Convert the position in pos (assumed to have an absolute path) into a
+// relative path if possible. Paths inside GOROOT/TINYGOROOT will remain
+// absolute.
+func RelativePosition(pos token.Position, wd string) token.Position {
+	// Check whether we even have a working directory.
 	if wd == "" {
-		return dir // working directory not found
+		return pos
 	}
-	relpath, err := filepath.Rel(wd, dir)
-	if err != nil {
-		return dir
+
+	// Paths inside GOROOT should be printed in full.
+	if strings.HasPrefix(pos.Filename, filepath.Join(goenv.Get("GOROOT"), "src")) || strings.HasPrefix(pos.Filename, filepath.Join(goenv.Get("TINYGOROOT"), "src")) {
+		return pos
 	}
-	return relpath
+
+	// Make the path relative, for easier reading. Ignore any errors in the
+	// process (falling back to the absolute path).
+	relpath, err := filepath.Rel(wd, pos.Filename)
+	if err == nil {
+		pos.Filename = relpath
+	}
+	return pos
 }

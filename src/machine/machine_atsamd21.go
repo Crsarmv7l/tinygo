@@ -1904,7 +1904,7 @@ func (f flashBlockDevice) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 // WriteAt writes the given number of bytes to the block device.
-// Only word (32 bits) length data can be programmed.
+// Data is written to the page buffer in 4-byte chunks, then saved to flash memory.
 // See Atmel-42181G–SAM-D21_Datasheet–09/2015 page 359.
 // If the length of p is not long enough it will be padded with 0xFF bytes.
 // This method assumes that the destination is already erased.
@@ -1921,8 +1921,10 @@ func (f flashBlockDevice) WriteAt(p []byte, off int64) (n int, err error) {
 	waitWhileFlashBusy()
 
 	for j := 0; j < len(padded); j += int(f.WriteBlockSize()) {
-		// write word
-		*(*uint32)(unsafe.Pointer(address)) = binary.LittleEndian.Uint32(padded[j : j+int(f.WriteBlockSize())])
+		// page buffer is 64 bytes long, but only 4 bytes can be written at once
+		for k := 0; k < int(f.WriteBlockSize()); k += 4 {
+			*(*uint32)(unsafe.Pointer(address + uintptr(k))) = binary.LittleEndian.Uint32(padded[j+k : j+k+4])
+		}
 
 		sam.NVMCTRL.SetADDR(uint32(address >> 1))
 		sam.NVMCTRL.CTRLA.Set(sam.NVMCTRL_CTRLA_CMD_WP | (sam.NVMCTRL_CTRLA_CMDEX_KEY << sam.NVMCTRL_CTRLA_CMDEX_Pos))
@@ -1944,7 +1946,7 @@ func (f flashBlockDevice) Size() int64 {
 	return int64(FlashDataEnd() - FlashDataStart())
 }
 
-const writeBlockSize = 4
+const writeBlockSize = 64
 
 // WriteBlockSize returns the block size in which data can be written to
 // memory. It can be used by a client to optimize writes, non-aligned writes
@@ -2026,4 +2028,63 @@ func checkFlashError() error {
 	}
 
 	return nil
+}
+
+// Watchdog provides access to the hardware watchdog available
+// in the SAMD21.
+var Watchdog = &watchdogImpl{}
+
+const (
+	// WatchdogMaxTimeout in milliseconds (16s)
+	WatchdogMaxTimeout = (16384 * 1000) / 1024
+)
+
+type watchdogImpl struct{}
+
+// Configure the watchdog.
+//
+// This method should not be called after the watchdog is started and on
+// some platforms attempting to reconfigure after starting the watchdog
+// is explicitly forbidden / will not work.
+func (wd *watchdogImpl) Configure(config WatchdogConfig) error {
+	// Use OSCULP32K as source for Generic Clock Generator 8, divided by 32 to get 1.024kHz
+	sam.GCLK.GENDIV.Set(sam.GCLK_CLKCTRL_GEN_GCLK8 | (32 << sam.GCLK_GENDIV_DIV_Pos))
+	sam.GCLK.GENCTRL.Set(sam.GCLK_CLKCTRL_GEN_GCLK8 | (sam.GCLK_GENCTRL_SRC_OSCULP32K << sam.GCLK_GENCTRL_SRC_Pos) | sam.GCLK_GENCTRL_GENEN)
+	waitForSync()
+
+	// Use GCLK8 for watchdog
+	sam.GCLK.CLKCTRL.Set(sam.GCLK_CLKCTRL_ID_WDT | (sam.GCLK_CLKCTRL_GEN_GCLK8 << sam.GCLK_CLKCTRL_GEN_Pos) | sam.GCLK_CLKCTRL_CLKEN)
+
+	// Power on the watchdog peripheral
+	sam.PM.APBAMASK.SetBits(sam.PM_APBAMASK_WDT_)
+
+	// 1.024kHz clock
+	cycles := int((int64(config.TimeoutMillis) * 1024) / 1000)
+
+	// period is expressed as a power-of-two, starting at 8 / 1024ths of a second
+	period := uint8(0)
+	cfgCycles := 8
+	for cfgCycles < cycles {
+		period++
+		cfgCycles <<= 1
+
+		if period >= 0xB {
+			break
+		}
+	}
+
+	sam.WDT.CONFIG.Set(period << sam.WDT_CONFIG_PER_Pos)
+
+	return nil
+}
+
+// Starts the watchdog.
+func (wd *watchdogImpl) Start() error {
+	sam.WDT.CTRL.SetBits(sam.WDT_CTRL_ENABLE)
+	return nil
+}
+
+// Update the watchdog, indicating that `source` is healthy.
+func (wd *watchdogImpl) Update() {
+	sam.WDT.CLEAR.Set(sam.WDT_CLEAR_CLEAR_KEY)
 }

@@ -99,7 +99,8 @@ func runtimePanicAt(addr unsafe.Pointer, msg string) {
 	} else {
 		printstring("panic: runtime error: ")
 	}
-	println(msg)
+	printstring(msg)
+	printnl()
 	abort()
 }
 

@@ -58,6 +58,7 @@ type Config struct {
 	MaxStackAlloc      uint64
 	NeedsStackObjects  bool
 	Debug              bool // Whether to emit debug information in the LLVM module.
+	Nobounds           bool // Whether to skip bounds checks
 	PanicStrategy      string
 }
 
@@ -388,7 +389,7 @@ func (c *compilerContext) getLLVMType(goType types.Type) llvm.Type {
 // makeLLVMType creates a LLVM type for a Go type. Don't call this, use
 // getLLVMType instead.
 func (c *compilerContext) makeLLVMType(goType types.Type) llvm.Type {
-	switch typ := goType.(type) {
+	switch typ := types.Unalias(goType).(type) {
 	case *types.Array:
 		elemType := c.getLLVMType(typ.Elem())
 		return llvm.ArrayType(elemType, int(typ.Len()))
@@ -496,6 +497,21 @@ func (c *compilerContext) createDIType(typ types.Type) llvm.Metadata {
 	llvmType := c.getLLVMType(typ)
 	sizeInBytes := c.targetData.TypeAllocSize(llvmType)
 	switch typ := typ.(type) {
+	case *types.Alias:
+		// Implement types.Alias just like types.Named: by treating them like a
+		// C typedef.
+		temporaryMDNode := c.dibuilder.CreateReplaceableCompositeType(llvm.Metadata{}, llvm.DIReplaceableCompositeType{
+			Tag:         dwarf.TagTypedef,
+			SizeInBits:  sizeInBytes * 8,
+			AlignInBits: uint32(c.targetData.ABITypeAlignment(llvmType)) * 8,
+		})
+		c.ditypes[typ] = temporaryMDNode
+		md := c.dibuilder.CreateTypedef(llvm.DITypedef{
+			Type: c.getDIType(types.Unalias(typ)), // TODO: use typ.Rhs in Go 1.23
+			Name: typ.String(),
+		})
+		temporaryMDNode.ReplaceAllUsesWith(md)
+		return md
 	case *types.Array:
 		return c.dibuilder.CreateArrayType(llvm.DIArrayType{
 			SizeInBits:  sizeInBytes * 8,
@@ -856,6 +872,11 @@ func (c *compilerContext) createPackage(irbuilder llvm.Builder, pkg *ssa.Package
 		case *ssa.Type:
 			if types.IsInterface(member.Type()) {
 				// Interfaces don't have concrete methods.
+				continue
+			}
+			if _, isalias := member.Type().(*types.Alias); isalias {
+				// Aliases don't need to be redefined, since they just refer to
+				// an already existing type whose methods will be defined.
 				continue
 			}
 
@@ -1835,15 +1856,7 @@ func (b *builder) createBuiltin(argTypes []types.Type, argValues []llvm.Value, c
 //
 // This is also where compiler intrinsics are implemented.
 func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) {
-	var params []llvm.Value
-	for _, param := range instr.Args {
-		params = append(params, b.getValue(param, getPos(instr)))
-	}
-
-	// Try to call the function directly for trivially static calls.
-	var callee, context llvm.Value
-	var calleeType llvm.Type
-	exported := false
+	// See if this is an intrinsic function that is handled specially.
 	if fn := instr.StaticCallee(); fn != nil {
 		// Direct function call, either to a named or anonymous (directly
 		// applied) function call. If it is anonymous, it may be a closure.
@@ -1879,13 +1892,29 @@ func (b *builder) createFunctionCall(instr *ssa.CallCommon) (llvm.Value, error) 
 			return llvm.ConstInt(b.ctx.Int8Type(), panicStrategy, false), nil
 		case name == "runtime/interrupt.New":
 			return b.createInterruptGlobal(instr)
+		case name == "runtime.exportedFuncPtr":
+			_, ptr := b.getFunction(instr.Args[0].(*ssa.Function))
+			return b.CreatePtrToInt(ptr, b.uintptrType, ""), nil
+		case name == "(*runtime/interrupt.Checkpoint).Save":
+			return b.createInterruptCheckpoint(instr.Args[0]), nil
 		case name == "internal/abi.FuncPCABI0":
 			retval := b.createDarwinFuncPCABI0Call(instr)
 			if !retval.IsNil() {
 				return retval, nil
 			}
 		}
+	}
 
+	var params []llvm.Value
+	for _, param := range instr.Args {
+		params = append(params, b.getValue(param, getPos(instr)))
+	}
+
+	// Try to call the function directly for trivially static calls.
+	var callee, context llvm.Value
+	var calleeType llvm.Type
+	exported := false
+	if fn := instr.StaticCallee(); fn != nil {
 		calleeType, callee = b.getFunction(fn)
 		info := b.getFunctionInfo(fn)
 		if callee.IsNil() {

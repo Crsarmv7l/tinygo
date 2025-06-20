@@ -10,7 +10,7 @@ import (
 var (
 	validBuildModeOptions     = []string{"default", "c-shared", "wasi-legacy"}
 	validGCOptions            = []string{"none", "leaking", "conservative", "custom", "precise", "boehm"}
-	validSchedulerOptions     = []string{"none", "tasks", "asyncify"}
+	validSchedulerOptions     = []string{"none", "tasks", "asyncify", "threads", "cores"}
 	validSerialOptions        = []string{"none", "uart", "usb", "rtt"}
 	validPrintSizeOptions     = []string{"none", "short", "full", "html"}
 	validPanicStrategyOptions = []string{"print", "trap"}
@@ -43,6 +43,7 @@ type Options struct {
 	PrintCommands   func(cmd string, args ...string) `json:"-"`
 	Semaphore       chan struct{}                    `json:"-"` // -p flag controls cap
 	Debug           bool
+	Nobounds        bool
 	PrintSizes      string
 	PrintAllocs     *regexp.Regexp // regexp string
 	PrintStacks     bool
@@ -52,7 +53,6 @@ type Options struct {
 	Programmer      string
 	OpenOCDCommands []string
 	LLVMFeatures    string
-	PrintJSON       bool
 	Monitor         bool
 	BaudRate        int
 	Timeout         time.Duration

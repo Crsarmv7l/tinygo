@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"go/types"
 	"hash/crc32"
-	"io/fs"
 	"math/bits"
 	"os"
 	"os/exec"
@@ -147,14 +146,13 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	// the libc needs them.
 	root := goenv.Get("TINYGOROOT")
 	var libcDependencies []*compileJob
-	var libcJob *compileJob
 	switch config.Target.Libc {
 	case "darwin-libSystem":
-		job := makeDarwinLibSystemJob(config, tmpdir)
-		libcDependencies = append(libcDependencies, job)
+		libcJob := makeDarwinLibSystemJob(config, tmpdir)
+		libcDependencies = append(libcDependencies, libcJob)
 	case "musl":
 		var unlock func()
-		libcJob, unlock, err = libMusl.load(config, tmpdir, nil)
+		libcJob, unlock, err := libMusl.load(config, tmpdir)
 		if err != nil {
 			return BuildResult{}, err
 		}
@@ -162,32 +160,33 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		libcDependencies = append(libcDependencies, dummyCompileJob(filepath.Join(filepath.Dir(libcJob.result), "crt1.o")))
 		libcDependencies = append(libcDependencies, libcJob)
 	case "picolibc":
-		libcJob, unlock, err := libPicolibc.load(config, tmpdir, nil)
+		libcJob, unlock, err := libPicolibc.load(config, tmpdir)
 		if err != nil {
 			return BuildResult{}, err
 		}
 		defer unlock()
 		libcDependencies = append(libcDependencies, libcJob)
 	case "wasi-libc":
-		path := filepath.Join(root, "lib/wasi-libc/sysroot/lib/wasm32-wasi/libc.a")
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			return BuildResult{}, errors.New("could not find wasi-libc, perhaps you need to run `make wasi-libc`?")
+		libcJob, unlock, err := libWasiLibc.load(config, tmpdir)
+		if err != nil {
+			return BuildResult{}, err
 		}
-		libcDependencies = append(libcDependencies, dummyCompileJob(path))
+		defer unlock()
+		libcDependencies = append(libcDependencies, libcJob)
 	case "wasmbuiltins":
-		libcJob, unlock, err := libWasmBuiltins.load(config, tmpdir, nil)
+		libcJob, unlock, err := libWasmBuiltins.load(config, tmpdir)
 		if err != nil {
 			return BuildResult{}, err
 		}
 		defer unlock()
 		libcDependencies = append(libcDependencies, libcJob)
 	case "mingw-w64":
-		job, unlock, err := libMinGW.load(config, tmpdir, nil)
+		libcJob, unlock, err := libMinGW.load(config, tmpdir)
 		if err != nil {
 			return BuildResult{}, err
 		}
 		defer unlock()
-		libcDependencies = append(libcDependencies, job)
+		libcDependencies = append(libcDependencies, libcJob)
 		libcDependencies = append(libcDependencies, makeMinGWExtraLibs(tmpdir, config.GOARCH())...)
 	case "":
 		// no library specified, so nothing to do
@@ -215,6 +214,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		MaxStackAlloc:      config.MaxStackAlloc(),
 		NeedsStackObjects:  config.NeedsStackObjects(),
 		Debug:              !config.Options.SkipDWARF, // emit DWARF except when -internal-nodwarf is passed
+		Nobounds:           config.Options.Nobounds,
 		PanicStrategy:      config.PanicStrategy(),
 	}
 
@@ -703,7 +703,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 	// Add compiler-rt dependency if needed. Usually this is a simple load from
 	// a cache.
 	if config.Target.RTLib == "compiler-rt" {
-		job, unlock, err := libCompilerRT.load(config, tmpdir, nil)
+		job, unlock, err := libCompilerRT.load(config, tmpdir)
 		if err != nil {
 			return result, err
 		}
@@ -713,10 +713,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 	// The Boehm collector is stored in a separate C library.
 	if config.GC() == "boehm" {
-		if libcJob == nil {
-			return BuildResult{}, fmt.Errorf("boehm GC isn't supported with libc %s", config.Target.Libc)
-		}
-		job, unlock, err := BoehmGC.load(config, tmpdir, libcJob)
+		job, unlock, err := BoehmGC.load(config, tmpdir)
 		if err != nil {
 			return BuildResult{}, err
 		}
